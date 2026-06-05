@@ -1,6 +1,7 @@
 from collections import defaultdict
 from datetime import datetime
 from math import sqrt
+from numbers import Number
 
 import numpy as np
 from bson import ObjectId
@@ -12,16 +13,58 @@ from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.preprocessing import StandardScaler
 
 from database import db
-from ml_features import FEATURE_NAMES
 
 router = APIRouter(prefix="/ml", tags=["machine-learning"])
 
+HASH_FIELDS = {"hash", "md5_hash"}
+TECHNICAL_FIELDS = {
+    "_id",
+    "id",
+    "file_id",
+    "duplicate_of",
+    "feature_vector",
+    "feature_names",
+    "analysis_status",
+    "uploaded_at",
+    "processed_at",
+    "processing_started_at",
+    "error",
+    "ml_cluster",
+    "ml_model",
+    "ml_model_run_id",
+    "ml_pca",
+}
+HASH_DERIVED_FIELDS = {"is_duplicate", "duplicate_of"}
+EXCLUDED_MODEL_FIELDS = HASH_FIELDS | TECHNICAL_FIELDS | HASH_DERIVED_FIELDS
 
-async def _feature_songs():
+NUMERIC_TOP_LEVEL_FIELDS = {
+    "file_size",
+    "duration",
+    "duration_seconds",
+    "year",
+    "audio_year",
+    "audio_bitrate",
+    "audio_samplerate",
+    "audio_channels",
+}
+CATEGORICAL_TOP_LEVEL_FIELDS = {
+    "title",
+    "artist",
+    "album",
+    "genre",
+    "filename",
+    "content_type",
+    "audio_title",
+    "audio_artist",
+    "audio_album",
+    "audio_genre",
+}
+
+
+async def _analyzed_songs():
     songs = []
-    async for song in db.songs.find({"feature_vector": {"$exists": True}}):
-        vector = song.get("feature_vector") or []
-        if len(vector) == len(FEATURE_NAMES):
+    async for song in db.songs.find({"analysis_status": "done"}):
+        if _model_fields(song):
             songs.append(song)
     return songs
 
@@ -46,8 +89,103 @@ def _serialize_song(song):
     }
 
 
-def _matrix(songs):
-    return np.array([song["feature_vector"] for song in songs], dtype=float)
+def _as_float(value):
+    if value is None or isinstance(value, bool):
+        return None
+    if isinstance(value, Number):
+        value = float(value)
+        return value if np.isfinite(value) else None
+    if isinstance(value, str):
+        try:
+            parsed = float(value.strip())
+            return parsed if np.isfinite(parsed) else None
+        except ValueError:
+            return None
+    return None
+
+
+def _clean_category(value):
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    return text if text else None
+
+
+def _model_fields(song):
+    numeric = {}
+    categorical = {}
+
+    features = song.get("features") or {}
+    for key, value in features.items():
+        number = _as_float(value)
+        if number is not None:
+            numeric[f"features.{key}"] = number
+
+    for key, value in song.items():
+        if key in EXCLUDED_MODEL_FIELDS or key in {"features"}:
+            continue
+
+        if key in NUMERIC_TOP_LEVEL_FIELDS:
+            number = _as_float(value)
+            if number is not None:
+                numeric[key] = number
+            continue
+
+        if key in CATEGORICAL_TOP_LEVEL_FIELDS:
+            category = _clean_category(value)
+            if category is not None:
+                categorical[key] = category
+
+    return {"numeric": numeric, "categorical": categorical}
+
+
+def _build_schema(songs):
+    numeric_fields = set()
+    categorical_values = defaultdict(set)
+
+    for song in songs:
+        fields = _model_fields(song)
+        numeric_fields.update(fields["numeric"].keys())
+        for key, value in fields["categorical"].items():
+            categorical_values[key].add(value)
+
+    categorical_fields = {
+        key: sorted(values)
+        for key, values in sorted(categorical_values.items())
+        if values
+    }
+
+    return {
+        "numeric_fields": sorted(numeric_fields),
+        "categorical_fields": categorical_fields,
+        "excluded_fields": sorted(EXCLUDED_MODEL_FIELDS),
+        "description": "Uses analyzed song audio features, metadata and file attributes; excludes hashes, hash-derived duplicate flags, technical IDs and timestamps.",
+    }
+
+
+def _vectorize_song(song, schema):
+    fields = _model_fields(song)
+    vector = []
+
+    for key in schema["numeric_fields"]:
+        vector.append(float(fields["numeric"].get(key, 0.0)))
+
+    for key, categories in schema["categorical_fields"].items():
+        value = fields["categorical"].get(key)
+        vector.extend(1.0 if value == category else 0.0 for category in categories)
+
+    return vector
+
+
+def _matrix(songs, schema=None):
+    schema = schema or _build_schema(songs)
+    matrix = np.array([_vectorize_song(song, schema) for song in songs], dtype=float)
+    if matrix.size == 0 or matrix.shape[1] == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Analyzed songs do not contain enough usable non-hash fields for ML training.",
+        )
+    return matrix, schema
 
 
 def _cluster_count(sample_count):
@@ -143,8 +281,8 @@ def _playlist_name(summary):
 
 @router.post("/train")
 async def train_models():
-    songs = await _feature_songs()
-    x = _matrix(songs)
+    songs = await _analyzed_songs()
+    x, schema = _matrix(songs)
     k = _cluster_count(len(songs))
 
     scaler = StandardScaler()
@@ -180,26 +318,26 @@ async def train_models():
     best_labels = best["labels"]
 
     pca_points = []
-    if len(songs) >= 2:
-        pca = PCA(n_components=2, random_state=42)
-        reduced = pca.fit_transform(x_scaled)
-        for song, point, label in zip(songs, reduced, best_labels):
-            pca_points.append(
-                {
-                    "song_id": str(song["_id"]),
-                    "title": song.get("title"),
-                    "artist": song.get("artist"),
-                    "cluster": int(label),
-                    "x": float(point[0]),
-                    "y": float(point[1]),
-                }
-            )
+    pca = PCA(n_components=2, random_state=42)
+    reduced = pca.fit_transform(x_scaled)
+    for song, point, label in zip(songs, reduced, best_labels):
+        pca_points.append(
+            {
+                "song_id": str(song["_id"]),
+                "title": song.get("title"),
+                "artist": song.get("artist"),
+                "cluster": int(label),
+                "x": float(point[0]),
+                "y": float(point[1]),
+            }
+        )
 
     cluster_summary = _cluster_summary(songs, best_labels)
     run_doc = {
         "trained_at": datetime.utcnow(),
         "song_count": len(songs),
-        "feature_names": FEATURE_NAMES,
+        "feature_schema": schema,
+        "feature_count": int(x.shape[1]),
         "cluster_count": k,
         "models_tested": results,
         "selected_model": {
@@ -244,7 +382,7 @@ async def stats():
     async for song in db.songs.find({}):
         all_songs.append(song)
 
-    featured = [song for song in all_songs if song.get("feature_vector")]
+    featured = [song for song in all_songs if song.get("analysis_status") == "done"]
     statuses = defaultdict(int)
     for song in all_songs:
         statuses[song.get("analysis_status", "unknown")] += 1
@@ -298,8 +436,8 @@ async def playlists():
                 "cluster": cluster,
                 "name": f"{_playlist_name(summary)} {cluster + 1}",
                 "description": (
-                    f"Generated by {latest['selected_model']['model_name']} from tempo, energy, "
-                    "spectral, MFCC and chroma features."
+                    f"Generated by {latest['selected_model']['model_name']} from analyzed song data "
+                    "excluding hashes and technical identifiers."
                 ),
                 "song_count": len(cluster_songs),
                 "average_tempo": summary.get("average_tempo"),
@@ -316,14 +454,16 @@ async def recommendations(song_id: str, limit: int = Query(5, ge=1, le=20)):
     if not ObjectId.is_valid(song_id):
         raise HTTPException(status_code=400, detail="Invalid song id")
 
-    songs = await _feature_songs()
+    songs = await _analyzed_songs()
     target_index = next((index for index, song in enumerate(songs) if str(song["_id"]) == song_id), None)
     if target_index is None:
-        raise HTTPException(status_code=404, detail="Song has no extracted features yet")
+        raise HTTPException(status_code=404, detail="Song has no analyzed ML fields yet")
     if len(songs) < 2:
         return {"song_id": song_id, "recommendations": []}
 
-    x = _matrix(songs)
+    latest = await latest_model_run()
+    schema = latest.get("feature_schema") if latest else None
+    x, schema = _matrix(songs, schema=schema)
     x_scaled = StandardScaler().fit_transform(x)
     similarities = cosine_similarity([x_scaled[target_index]], x_scaled)[0]
     target = songs[target_index]
@@ -342,12 +482,13 @@ async def recommendations(song_id: str, limit: int = Query(5, ge=1, le=20)):
                 "song": _serialize_song(song),
                 "similarity": round(float(similarities[index]), 4),
                 "same_cluster": same_cluster,
-                "reason": "same playlist cluster" if same_cluster else f"closest audio profile, tempo gap {round(tempo_gap, 1)} BPM",
+                "reason": "same playlist cluster" if same_cluster else f"closest non-hash song profile, tempo gap {round(tempo_gap, 1)} BPM",
             }
         )
 
     ranked.sort(key=lambda item: item["similarity"], reverse=True)
     return {
         "song": _serialize_song(target),
+        "feature_schema": schema,
         "recommendations": ranked[:limit],
     }

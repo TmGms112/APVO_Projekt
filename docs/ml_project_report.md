@@ -16,8 +16,10 @@ Stored data includes:
 - analysis status
 - hash values for duplicate detection
 - extracted audio metadata
-- extracted machine-learning feature vector
+- extracted machine-learning fields
 - selected model cluster after training
+
+Hash values are stored for duplicate detection and reporting, but they are explicitly excluded from model training and recommendation vectors.
 
 ## 3. Data Processing Pipeline
 
@@ -26,27 +28,30 @@ Stored data includes:
 3. A worker process finds songs with `analysis_status = pending`.
 4. The worker reads the audio bytes from GridFS.
 5. The worker extracts audio features with Librosa and metadata with TinyTag.
-6. The worker stores the feature vector in MongoDB.
-7. The ML endpoint trains and compares models on all analyzed songs.
-8. The best model assigns each song to a cluster used as an automatic playlist.
-9. Cosine similarity is used to recommend the next song from the feature vectors.
+6. The worker stores the analytical song fields in MongoDB.
+7. The ML endpoint builds a training matrix from analyzed song fields, excluding hash values, hash-derived duplicate flags, technical IDs and timestamps.
+8. The ML endpoint trains and compares models on all analyzed songs.
+9. The best model assigns each song to a cluster used as an automatic playlist.
+10. Cosine similarity is used to recommend the next song from the same non-hash feature schema.
 
-## 4. Extracted Features
+## 4. Fields Used By The Models
 
-The feature vector contains audio descriptors that summarize rhythm, loudness, timbre and harmonic content:
+The model input is built from analyzed song data:
 
-- duration in seconds
-- tempo in BPM
-- RMS energy mean and standard deviation
-- zero crossing rate mean
-- spectral centroid mean and standard deviation
-- spectral bandwidth mean
-- spectral rolloff mean
-- spectral contrast mean
-- 13 MFCC mean values
-- 12 chroma mean values
+- extracted audio features, including tempo, energy, spectral, MFCC and chroma values
+- file attributes such as file size and duration
+- parsed audio metadata such as bitrate, sample rate, channel count and year
+- categorical metadata such as title, artist, album, genre, filename and content type, encoded as one-hot values
 
-These features are suitable because similar songs often share tempo, energy, spectral shape, timbre and harmonic profile.
+Excluded model fields:
+
+- `hash`
+- `md5_hash`
+- hash-derived duplicate fields such as `is_duplicate` and `duplicate_of`
+- technical identifiers such as MongoDB `_id` and GridFS `file_id`
+- timestamps and previous ML output fields
+
+This keeps the model based on the user's analyzed song data without allowing file hashes to influence similarity.
 
 ## 5. Models Tested
 
@@ -60,7 +65,7 @@ Agglomerative Clustering starts with each song as its own cluster and repeatedly
 
 ### Recommendation Layer: Cosine Similarity
 
-Cosine similarity is used for the next-song recommendation. After the feature vectors are standardized, the app compares the currently selected song to every other song and returns the most similar songs. This is not the main evaluated model; it is the retrieval layer that uses the learned/extracted feature representation.
+Cosine similarity is used for the next-song recommendation. After the model fields are standardized, the app compares the currently selected song to every other analyzed song and returns the most similar songs. This is not the main evaluated model; it is the retrieval layer that uses the same non-hash feature schema as the trained models.
 
 ## 6. Evaluation Metrics
 
@@ -101,6 +106,7 @@ Use the ML dashboard screenshots and the `/ml/stats` endpoint to present:
 - duration histogram
 - model comparison metrics
 - generated cluster/playlist sizes
+- number of model input fields used by the selected run
 
 For the paper, include a table like this after running the model on your real songs:
 
@@ -111,7 +117,7 @@ For the paper, include a table like this after running the model on your real so
 
 ## 9. Suggested Presentation Text
 
-This project implements a personal music recommendation system. The system uses MongoDB as a NoSQL database for both metadata and audio file storage through GridFS. After each upload, a background worker extracts audio features from the song. Two clustering models, K-Means and Agglomerative Clustering, are evaluated using silhouette score, Davies-Bouldin score and Calinski-Harabasz score. The best model is integrated into the application to create automatic playlists. For next-song recommendation, the system uses cosine similarity between standardized audio feature vectors to find the most similar uploaded songs.
+This project implements a personal music recommendation system. The system uses MongoDB as a NoSQL database for both metadata and audio file storage through GridFS. After each upload, a background worker extracts audio features and metadata from the song. The machine-learning pipeline builds model vectors from analyzed song data while excluding hash values, technical identifiers and timestamps. Two clustering models, K-Means and Agglomerative Clustering, are evaluated using silhouette score, Davies-Bouldin score and Calinski-Harabasz score. The best model is integrated into the application to create automatic playlists. For next-song recommendation, the system uses cosine similarity between standardized non-hash song vectors to find the most similar uploaded songs.
 
 ## 10. Limitations And Future Work
 
