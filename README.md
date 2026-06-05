@@ -67,6 +67,8 @@ http://localhost:8000/songs/<song_id>/storage-check
 
 Old `status: "processed"` songs from the first app version may have fields like `audio_artist`, `audio_bitrate`, `duration_seconds`, and `hash`, but still lack the new ML `features` and `feature_vector` fields. The current worker intentionally reprocesses any song that has reachable audio storage and is missing `features`, even if its old status is already `processed`.
 
+The worker Docker image copies the whole backend source because it shares modules with the API, including `ml_features.py` and `storage.py`.
+
 ## Machine Learning Functionality
 
 The app uses content-based recommendation. It extracts tempo, energy, spectral, MFCC and chroma features from each uploaded song and combines them with other analyzed song metadata and file attributes. Hash values are kept for duplicate detection, but they are not used by the models.
