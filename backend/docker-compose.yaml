@@ -75,6 +75,7 @@ services:
       dockerfile: worker/dockerfile
     container_name: spotify_worker
     environment:
+      - PYTHONPATH=/app
       - MONGO_URL=${MONGO_URL:-mongodb://mongo:27017/spotify}
       - MONGO_DB_NAME=${MONGO_DB_NAME:-spotify}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio1:9000}
