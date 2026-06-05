@@ -53,10 +53,16 @@ Do not run `docker compose down -v` unless you intentionally want to delete Mong
 
 `Legacy storage` in the UI means the song was uploaded by the old app version. MongoDB has a song document with a `file_key`, but the MP3 bytes are stored in MinIO, not inside the document itself.
 
-You can inspect the current backend view of storage/status with:
+You can inspect the current backend view of storage/status and a sample of MinIO object availability with:
 
 ```text
-http://localhost:8000/songs/storage-summary
+http://localhost:8000/songs/storage-summary?sample=100
+```
+
+You can inspect one specific song object with:
+
+```text
+http://localhost:8000/songs/<song_id>/storage-check
 ```
 
 ## Machine Learning Functionality
@@ -96,6 +102,7 @@ The frontend proxies `/api` to the backend on `http://127.0.0.1:8000` during dev
 - `POST /songs/upload` - upload audio to MongoDB/GridFS.
 - `GET /songs/?limit=1000` - list songs and analysis status.
 - `GET /songs/storage-summary` - count GridFS, legacy and missing storage records.
+- `GET /songs/{song_id}/storage-check` - check if one song's referenced audio object exists.
 - `GET /songs/{song_id}/stream` - stream audio for playback.
 - `POST /ml/train` - evaluate models and store the selected model run.
 - `GET /ml/stats` - dataset statistics and chart-ready distributions.

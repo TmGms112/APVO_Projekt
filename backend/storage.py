@@ -21,6 +21,10 @@ def get_file(file_name: str, bucket: str = DEFAULT_BUCKET):
     return minio_client.get_object(bucket_name=bucket, object_name=file_name)
 
 
+def stat_file(file_name: str, bucket: str = DEFAULT_BUCKET):
+    return minio_client.stat_object(bucket_name=bucket, object_name=file_name)
+
+
 def upload_file(file_name: str, file_data, content_type: str, bucket: str = DEFAULT_BUCKET):
     if not minio_client.bucket_exists(bucket):
         minio_client.make_bucket(bucket)

@@ -44,7 +44,13 @@ while True:
             {
                 "$and": [
                     {"features": {"$exists": False}},
-                    {"$or": [{"analysis_status": "pending"}, {"status": "uploaded"}, {"analysis_status": {"$exists": False}}]},
+                    {
+                        "$or": [
+                            {"analysis_status": {"$in": ["pending", "uploaded"]}},
+                            {"status": {"$in": ["pending", "uploaded"]}},
+                            {"analysis_status": {"$exists": False}},
+                        ]
+                    },
                     {"$or": [{"file_id": {"$exists": True}}, {"file_key": {"$exists": True}}]},
                 ]
             },
@@ -63,7 +69,13 @@ while True:
             continue
 
         song_id = str(song["_id"])
-        print(f"Processing: {song_id}")
+        print(
+            "Processing:",
+            song_id,
+            "title=", song.get("title"),
+            "storage=", "gridfs" if song.get("file_id") else "legacy",
+            "file_key=", song.get("file_key"),
+        )
 
         file_bytes = read_song_bytes(song)
         file_size = len(file_bytes)
@@ -106,7 +118,7 @@ while True:
         print(f"Finished: {song_id}")
 
     except Exception as e:
-        print("ERROR:", e)
+        print("ERROR processing song", song_id, ":", e)
         if song_id:
             db.songs.update_one(
                 {"_id": ObjectId(song_id)},

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from cache import CacheKeys, get_cached, invalidate_song_cache, set_cached
 from database import db, fs_bucket
 from models.song import CreateSong, UpdateSong
-from storage import get_file
+from storage import get_file, stat_file
 
 
 class SongMetaUpdate(BaseModel):
@@ -170,7 +170,7 @@ async def get_songs(limit: int = Query(1000, ge=1, le=5000)):
 
 
 @router.get("/storage-summary")
-async def storage_summary():
+async def storage_summary(sample: int = Query(25, ge=0, le=200)):
     summary = {
         "gridfs": 0,
         "legacy_object_storage": 0,
@@ -180,14 +180,79 @@ async def storage_summary():
         "pending": 0,
         "processing": 0,
         "failed": 0,
+        "sample_checked": 0,
+        "sample_existing_objects": 0,
+        "sample_missing_objects": 0,
+        "missing_object_examples": [],
     }
 
+    checked = 0
     async for song in db.songs.find({}):
         summary[storage_kind(song)] += 1
         status = effective_analysis_status(song)
         summary[status] = summary.get(status, 0) + 1
 
+        if checked < sample and song.get("file_key"):
+            checked += 1
+            summary["sample_checked"] = checked
+            try:
+                stat_file(song["file_key"], song.get("bucket") or "songs")
+                summary["sample_existing_objects"] += 1
+            except Exception as e:
+                summary["sample_missing_objects"] += 1
+                if len(summary["missing_object_examples"]) < 10:
+                    summary["missing_object_examples"].append(
+                        {
+                            "song_id": str(song["_id"]),
+                            "title": song.get("title"),
+                            "bucket": song.get("bucket") or "songs",
+                            "file_key": song.get("file_key"),
+                            "error": str(e),
+                        }
+                    )
+
     return summary
+
+
+@router.get("/{song_id}/storage-check")
+async def song_storage_check(song_id: str):
+    song = await db.songs.find_one({"_id": parse_object_id(song_id)})
+    if not song:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+    result = {
+        "song_id": song_id,
+        "title": song.get("title"),
+        "storage_kind": storage_kind(song),
+        "file_id": str(song.get("file_id")) if song.get("file_id") else None,
+        "bucket": song.get("bucket") or "songs",
+        "file_key": song.get("file_key"),
+        "exists": False,
+        "error": None,
+    }
+
+    if song.get("file_id"):
+        try:
+            grid_out = await fs_bucket.open_download_stream(song["file_id"])
+            result["exists"] = True
+            result["size"] = grid_out.length
+        except Exception as e:
+            result["error"] = str(e)
+        return result
+
+    if song.get("file_key"):
+        try:
+            stat = stat_file(song["file_key"], song.get("bucket") or "songs")
+            result["exists"] = True
+            result["size"] = stat.size
+            result["content_type"] = stat.content_type
+            result["last_modified"] = stat.last_modified.isoformat() if stat.last_modified else None
+        except Exception as e:
+            result["error"] = str(e)
+        return result
+
+    result["error"] = "No file_id or file_key on this song document"
+    return result
 
 
 @router.get("/{song_id}/stream")
