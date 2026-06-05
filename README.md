@@ -5,16 +5,16 @@ Full-stack audio library application with MongoDB-backed audio uploads, analysis
 ## Structure
 
 - `frontend/` - Vite + React client.
-- `backend/` - FastAPI API, MongoDB/GridFS storage, Redis cache helpers, audio-analysis worker, legacy object-storage compatibility, and ML endpoints.
+- `backend/` - FastAPI API, MongoDB/GridFS storage, Redis cache helpers, audio-analysis worker, legacy MinIO object-storage compatibility, and ML endpoints.
 - `docs/` - Project report material for describing the analytical workflow and results.
 
 ## Runtime Architecture
 
 1. The React app uploads audio through `POST /songs/upload`.
 2. FastAPI stores new uploaded files directly in MongoDB GridFS and stores song metadata in the `songs` collection.
-3. Existing legacy records with `file_key` and `bucket` are also supported for playback/analysis if the referenced object-storage files are available.
+3. Existing legacy records with `file_key` and `bucket` are also supported for playback/analysis through MinIO if the referenced files are available.
 4. A background worker polls MongoDB for songs that need analysis.
-5. The worker reads audio bytes from GridFS or legacy object storage, calculates hashes, extracts metadata and audio features, and updates the song document.
+5. The worker reads audio bytes from GridFS or legacy MinIO object storage, calculates hashes, extracts metadata and audio features, and updates the song document.
 6. The ML API builds model vectors from analyzed song data while excluding hash values, hash-derived duplicate flags, technical IDs and timestamps.
 7. The ML API compares K-Means and Agglomerative Clustering on those vectors and stores the best model run.
 8. The app displays songs, playback controls, model statistics, generated playlists, and next-song recommendations.
@@ -23,6 +23,16 @@ Full-stack audio library application with MongoDB-backed audio uploads, analysis
 
 The default database name is `spotify` because the existing project data uses `spotify.songs`. New GridFS uploads also use this database.
 
+The Compose stack includes MinIO again because old `spotify.songs` records use this shape:
+
+```js
+file_key: "...mp3"
+bucket: "songs"
+status: "uploaded"
+```
+
+That means MongoDB stores metadata, while MinIO stores the actual MP3 bytes. If MinIO is not running or its old volumes are missing, the app can list the songs but cannot play or analyze them.
+
 If your MongoDB is not the Docker Compose Mongo service, set these environment variables before starting the backend:
 
 ```bash
@@ -30,16 +40,18 @@ MONGO_URL=mongodb://host.docker.internal:27017/spotify
 MONGO_DB_NAME=spotify
 ```
 
-For legacy documents with `file_key`, playback and worker analysis also need the matching object storage files. Configure these if your old songs are stored in MinIO:
+For legacy documents with `file_key`, the matching MinIO files must be reachable. With the included Compose stack, backend and worker default to:
 
 ```bash
-MINIO_ENDPOINT=host.docker.internal:9000
+MINIO_ENDPOINT=minio1:9000
 MINIO_ACCESS_KEY=minio
 MINIO_SECRET_KEY=minio123
 MINIO_BUCKET=songs
 ```
 
-`Legacy storage` in the UI means the song was uploaded by the old app version. MongoDB has a song document with a `file_key`, but the MP3 bytes are not stored in that document. The app must fetch the audio from the old object storage bucket, usually MinIO. If the MongoDB documents exist but the referenced audio files do not exist in GridFS or MinIO, the app can list the songs but cannot play or analyze them.
+Do not run `docker compose down -v` unless you intentionally want to delete MongoDB and MinIO volumes.
+
+`Legacy storage` in the UI means the song was uploaded by the old app version. MongoDB has a song document with a `file_key`, but the MP3 bytes are stored in MinIO, not inside the document itself.
 
 You can inspect the current backend view of storage/status with:
 
