@@ -4,7 +4,7 @@ import SongList from "../components/SongList";
 import SearchBar from "../components/SearchBar";
 import EditMetadataModal from "../components/EditMetadataModal";
 import AnalyticsDashboard from "../components/AnalyticsDashboard";
-import { getSongs, searchSongs, updateSongMeta } from "../api/songs";
+import { getSongs, searchSongs, songStreamUrl, updateSongMeta } from "../api/songs";
 import {
   getLatestModelRun,
   getMlStats,
@@ -14,30 +14,7 @@ import {
 } from "../api/ml";
 
 export default function Home() {
-  const [songs, setSongs] = useState([
-    {
-      id: "1",
-      title: "Mock Song 1",
-      artist: "Mock Artist",
-      analysisStatus: "pending",
-    },
-    {
-      id: "2",
-      title: "Halo",
-      artist: "Beyonce",
-      analysisStatus: "done",
-      duration: 215,
-      genre: "pop",
-    },
-    {
-      id: "3",
-      title: "Hello",
-      artist: "Adele",
-      analysisStatus: "done",
-      duration: 295,
-    },
-  ]);
-
+  const [songs, setSongs] = useState([]);
   const [filters, setFilters] = useState({ title: "", artist: "" });
   const [error, setError] = useState("");
   const [editingSong, setEditingSong] = useState(null);
@@ -47,6 +24,7 @@ export default function Home() {
   const [playlists, setPlaylists] = useState(null);
   const [recommendations, setRecommendations] = useState(null);
   const [selectedSong, setSelectedSong] = useState(null);
+  const [playingSong, setPlayingSong] = useState(null);
 
   const filteredSongs = useMemo(() => {
     const t = (filters.title || "").toLowerCase();
@@ -62,7 +40,7 @@ export default function Home() {
   async function loadSongsFromApi() {
     try {
       setError("");
-      const data = await getSongs();
+      const data = await getSongs(2000);
       setSongs((Array.isArray(data) ? data : []).map(normalizeSongForUi));
       setFilters({ title: "", artist: "" });
     } catch (e) {
@@ -132,8 +110,12 @@ export default function Home() {
     }
   }
 
+  function handlePlay(song) {
+    setPlayingSong(song);
+  }
+
   return (
-    <div className="max-w-5xl mx-auto space-y-6">
+    <div className="max-w-5xl mx-auto space-y-6 pb-28">
       <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1">
           <h1 className="text-4xl font-bold tracking-tight">Audio Library</h1>
@@ -202,7 +184,13 @@ export default function Home() {
       </SectionCard>
 
       <SectionCard title="Songs" subtitle="Your current library">
-        <SongList songs={filteredSongs} onEdit={(song) => setEditingSong(song)} onRecommend={handleRecommend} />
+        <SongList
+          songs={filteredSongs}
+          onEdit={(song) => setEditingSong(song)}
+          onPlay={handlePlay}
+          onRecommend={handleRecommend}
+          playingSongId={playingSong?.id}
+        />
       </SectionCard>
 
       <EditMetadataModal
@@ -227,6 +215,24 @@ export default function Home() {
           }
         }}
       />
+
+      {playingSong && (
+        <div className="fixed left-0 right-0 bottom-0 z-40 border-t border-white/10 bg-neutral-950/95 backdrop-blur px-4 py-3">
+          <div className="max-w-5xl mx-auto flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div className="min-w-0">
+              <div className="font-semibold truncate">{playingSong.title}</div>
+              <div className="text-sm text-white/60 truncate">{playingSong.artist}</div>
+            </div>
+            <audio
+              className="w-full md:w-[520px]"
+              controls
+              autoPlay
+              src={songStreamUrl(playingSong.id)}
+              onError={() => setError("Could not play this song. Check that the audio file exists in GridFS or the legacy object storage referenced by file_key.")}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -247,13 +253,15 @@ function normalizeSongForUi(raw) {
   const id = raw.id || raw._id || raw.songId || raw.song_id;
   return {
     id: String(id),
-    title: raw.title || raw.name || raw.filename || "Untitled",
+    title: raw.title || raw.name || raw.filename || raw.file_key || "Untitled",
     artist: raw.artist || raw.audio_artist || "Unknown",
     genre: raw.genre || raw.audio_genre,
     year: raw.year || raw.audio_year,
-    analysisStatus: raw.analysisStatus || raw.analysis_status || "pending",
+    analysisStatus: raw.analysisStatus || raw.analysis_status || raw.status || "pending",
     duration: raw.duration || raw.duration_seconds,
     hash: raw.hash,
     cluster: raw.ml_cluster,
+    canStream: raw.can_stream || !!raw.file_id || !!raw.file_key,
+    legacyStorage: !!raw.file_key && !raw.file_id,
   };
 }

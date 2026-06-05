@@ -7,9 +7,10 @@ from gridfs import GridFSBucket
 from pymongo import MongoClient, ReturnDocument
 
 from ml_features import extract_audio_features
+from storage import get_file
 
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017/spotify_clone")
-MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "spotify_clone")
+MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017/spotify")
+MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "spotify")
 
 mongo = MongoClient(MONGO_URL)
 db = mongo[MONGO_DB_NAME]
@@ -17,14 +18,35 @@ fs_bucket = GridFSBucket(db, bucket_name="songs_files")
 
 print(f"Worker started against database: {MONGO_DB_NAME}")
 
+
+def read_song_bytes(song):
+    if song.get("file_id"):
+        file_id = song["file_id"]
+        if not isinstance(file_id, ObjectId):
+            file_id = ObjectId(file_id)
+        return fs_bucket.open_download_stream(file_id).read()
+
+    if song.get("file_key"):
+        response = get_file(song["file_key"], song.get("bucket") or "songs")
+        try:
+            return response.read()
+        finally:
+            response.close()
+
+    raise RuntimeError("Song has neither GridFS file_id nor legacy file_key")
+
+
 while True:
     song_id = None
 
     try:
         song = db.songs.find_one_and_update(
             {
-                "analysis_status": "pending",
-                "file_id": {"$exists": True},
+                "$and": [
+                    {"features": {"$exists": False}},
+                    {"$or": [{"analysis_status": "pending"}, {"status": "uploaded"}, {"analysis_status": {"$exists": False}}]},
+                    {"$or": [{"file_id": {"$exists": True}}, {"file_key": {"$exists": True}}]},
+                ]
             },
             {
                 "$set": {
@@ -41,21 +63,16 @@ while True:
             continue
 
         song_id = str(song["_id"])
-        file_id = song["file_id"]
-        if not isinstance(file_id, ObjectId):
-            file_id = ObjectId(file_id)
-
         print(f"Processing: {song_id}")
 
-        grid_out = fs_bucket.open_download_stream(file_id)
-        file_bytes = grid_out.read()
+        file_bytes = read_song_bytes(song)
         file_size = len(file_bytes)
 
         sha256_hash = hashlib.sha256(file_bytes).hexdigest()
         md5_hash = hashlib.md5(file_bytes).hexdigest()
         features, feature_vector, metadata = extract_audio_features(
             file_bytes,
-            song.get("filename") or "uploaded-audio",
+            song.get("filename") or song.get("title") or song.get("file_key") or "uploaded-audio",
         )
 
         duplicate = db.songs.find_one(
@@ -71,6 +88,7 @@ while True:
             "md5_hash": md5_hash,
             "file_size": file_size,
             "analysis_status": "done",
+            "status": "processed",
             "processed_at": time.time(),
             "duration_seconds": duration_seconds,
             "duration": round(duration_seconds) if duration_seconds is not None else None,

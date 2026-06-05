@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from cache import CacheKeys, get_cached, invalidate_song_cache, set_cached
 from database import db, fs_bucket
 from models.song import CreateSong, UpdateSong
+from storage import get_file
 
 
 class SongMetaUpdate(BaseModel):
@@ -29,12 +30,24 @@ def parse_object_id(value: str) -> ObjectId:
     return ObjectId(value)
 
 
+def effective_analysis_status(song: dict) -> str:
+    if song.get("analysis_status"):
+        return song["analysis_status"]
+    legacy_status = song.get("status")
+    if legacy_status in {"uploaded", "done", "processed"}:
+        return "done" if song.get("features") else "pending"
+    return legacy_status or "pending"
+
+
 def serialize_song(song: dict) -> dict:
     song = dict(song)
     song["id"] = str(song.pop("_id"))
 
     if isinstance(song.get("file_id"), ObjectId):
         song["file_id"] = str(song["file_id"])
+
+    song["analysis_status"] = effective_analysis_status(song)
+    song["can_stream"] = bool(song.get("file_id") or song.get("file_key"))
 
     for key, value in list(song.items()):
         if isinstance(value, datetime):
@@ -130,14 +143,14 @@ async def search_songs(
 
 
 @router.get("/")
-async def get_songs():
-    cache_key = CacheKeys.song_list()
+async def get_songs(limit: int = Query(1000, ge=1, le=5000)):
+    cache_key = CacheKeys.song_list(f"limit={limit}")
     cached = get_cached(cache_key)
     if cached is not None:
         return cached
 
     songs = []
-    async for song in db.songs.find():
+    async for song in db.songs.find().limit(limit):
         songs.append(serialize_song(song))
 
     set_cached(cache_key, songs)
@@ -150,18 +163,37 @@ async def stream_song(song_id: str):
     song = await db.songs.find_one({"_id": object_id})
     if not song:
         raise HTTPException(status_code=404, detail="Song not found")
-    if not song.get("file_id"):
-        raise HTTPException(status_code=404, detail="Song file not found")
 
-    try:
-        grid_out = await fs_bucket.open_download_stream(song["file_id"])
-        file_bytes = await grid_out.read()
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Song file not found: {e}") from e
+    if song.get("file_id"):
+        try:
+            grid_out = await fs_bucket.open_download_stream(song["file_id"])
+            file_bytes = await grid_out.read()
+            return StreamingResponse(
+                BytesIO(file_bytes),
+                media_type=song.get("content_type") or "audio/mpeg",
+            )
+        except Exception as e:
+            raise HTTPException(status_code=404, detail=f"GridFS song file not found: {e}") from e
 
-    return StreamingResponse(
-        BytesIO(file_bytes),
-        media_type=song.get("content_type") or "audio/mpeg",
+    if song.get("file_key"):
+        try:
+            minio_response = get_file(song["file_key"], song.get("bucket") or "songs")
+            return StreamingResponse(
+                minio_response,
+                media_type=song.get("content_type") or "audio/mpeg",
+            )
+        except Exception as e:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    "Legacy song file was not found. The MongoDB document exists, but playback also needs "
+                    f"the referenced object storage file `{song.get('file_key')}` in bucket `{song.get('bucket') or 'songs'}`. Error: {e}"
+                ),
+            ) from e
+
+    raise HTTPException(
+        status_code=404,
+        detail="Song file not found. This record has neither GridFS file_id nor legacy file_key.",
     )
 
 
@@ -234,11 +266,12 @@ async def get_song_analysis(song_id: str):
         "title": song.get("title"),
         "artist": song.get("artist"),
         "file_id": str(song.get("file_id")) if song.get("file_id") else None,
+        "file_key": song.get("file_key"),
         "hash": song.get("hash"),
         "file_size_bytes": song.get("file_size"),
         "uploaded_at": song.get("uploaded_at"),
-        "analysis_status": song.get("analysis_status", "pending"),
-        "status": "processed" if song.get("hash") else "pending",
+        "analysis_status": effective_analysis_status(song),
+        "status": "processed" if song.get("hash") or song.get("features") else "pending",
     }
 
     if "duration_seconds" in song:

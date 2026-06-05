@@ -1,4 +1,4 @@
-export default function SongCard({ song, onEdit, onRecommend }) {
+export default function SongCard({ song, onEdit, onPlay, onRecommend, isPlaying }) {
   const status = song.analysisStatus || "pending";
 
   return (
@@ -15,11 +15,19 @@ export default function SongCard({ song, onEdit, onRecommend }) {
           {song.genre && <Pill>{song.genre}</Pill>}
           {song.year && <Pill>{song.year}</Pill>}
           {song.cluster !== undefined && song.cluster !== null && <Pill>Cluster {song.cluster}</Pill>}
+          {song.legacyStorage && <Pill>Legacy storage</Pill>}
           {song.hash && <Pill className="max-w-[280px] truncate"># {song.hash}</Pill>}
         </div>
       </div>
 
       <div className="flex items-center justify-between md:justify-end gap-2">
+        <button
+          onClick={() => onPlay?.(song)}
+          disabled={!song.canStream}
+          className="px-4 py-2 rounded-full bg-white text-black font-semibold hover:bg-white/90 transition disabled:opacity-40"
+        >
+          {isPlaying ? "Playing" : "Play"}
+        </button>
         <button
           onClick={() => onRecommend?.(song)}
           disabled={status !== "done"}

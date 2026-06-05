@@ -28,8 +28,12 @@ services:
       dockerfile: worker/dockerfile
     container_name: spotify_worker
     environment:
-      - MONGO_URL=mongodb://mongo:27017/spotify_clone
-      - MONGO_DB_NAME=spotify_clone
+      - MONGO_URL=${MONGO_URL:-mongodb://mongo:27017/spotify}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-spotify}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio1:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minio123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-songs}
     depends_on:
       mongo:
         condition: service_healthy
@@ -42,10 +46,14 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - MONGO_URL=mongodb://mongo:27017/spotify_clone
-      - MONGO_DB_NAME=spotify_clone
+      - MONGO_URL=${MONGO_URL:-mongodb://mongo:27017/spotify}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-spotify}
       - REDIS_HOST=redis
-      - SECRET_KEY=change-me-in-production
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio1:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minio123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-songs}
     volumes:
       - ./:/app
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload

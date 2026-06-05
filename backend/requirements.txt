@@ -12,3 +12,4 @@ redis
 numpy
 librosa
 scikit-learn
+minio

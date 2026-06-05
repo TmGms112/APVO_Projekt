@@ -1,15 +1,5 @@
 import { apiUrl } from "./config";
 
-/**
- * Očekivani endpointi (možete kasnije uskladiti s Osobom A):
- * - GET    /songs
- * - GET    /songs/search?title=&artist=
- * - POST   /songs/upload        (multipart/form-data)
- * - PUT    /songs/{id}/meta     (json)
- * - DELETE /songs/{id}
- */
-
-// -------------- Helpers --------------
 async function handleJson(res) {
   const text = await res.text();
   let data = null;
@@ -31,9 +21,12 @@ async function handleJson(res) {
   return data;
 }
 
-// -------------- API calls --------------
-export async function getSongs() {
-  const res = await fetch(apiUrl("/songs/"));
+export function songStreamUrl(id) {
+  return apiUrl(`/songs/${id}/stream`);
+}
+
+export async function getSongs(limit = 1000) {
+  const res = await fetch(apiUrl(`/songs/?limit=${limit}`));
   return handleJson(res);
 }
 
@@ -64,7 +57,6 @@ export async function uploadSong(file, { title = "", artist = "" } = {}) {
 
   return handleJson(res);
 }
-
 
 export async function updateSongMeta(id, meta) {
   const res = await fetch(apiUrl(`/songs/${id}/meta`), {
