@@ -39,7 +39,13 @@ MINIO_SECRET_KEY=minio123
 MINIO_BUCKET=songs
 ```
 
-If the MongoDB documents exist but the referenced audio files do not exist in GridFS or MinIO, the app can list the songs but cannot play or analyze them.
+`Legacy storage` in the UI means the song was uploaded by the old app version. MongoDB has a song document with a `file_key`, but the MP3 bytes are not stored in that document. The app must fetch the audio from the old object storage bucket, usually MinIO. If the MongoDB documents exist but the referenced audio files do not exist in GridFS or MinIO, the app can list the songs but cannot play or analyze them.
+
+You can inspect the current backend view of storage/status with:
+
+```text
+http://localhost:8000/songs/storage-summary
+```
 
 ## Machine Learning Functionality
 
@@ -77,6 +83,7 @@ The frontend proxies `/api` to the backend on `http://127.0.0.1:8000` during dev
 
 - `POST /songs/upload` - upload audio to MongoDB/GridFS.
 - `GET /songs/?limit=1000` - list songs and analysis status.
+- `GET /songs/storage-summary` - count GridFS, legacy and missing storage records.
 - `GET /songs/{song_id}/stream` - stream audio for playback.
 - `POST /ml/train` - evaluate models and store the selected model run.
 - `GET /ml/stats` - dataset statistics and chart-ready distributions.

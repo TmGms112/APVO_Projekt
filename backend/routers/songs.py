@@ -31,12 +31,23 @@ def parse_object_id(value: str) -> ObjectId:
 
 
 def effective_analysis_status(song: dict) -> str:
+    if song.get("features") or song.get("analysis_status") == "done":
+        return "done"
     if song.get("analysis_status"):
         return song["analysis_status"]
-    legacy_status = song.get("status")
-    if legacy_status in {"uploaded", "done", "processed"}:
-        return "done" if song.get("features") else "pending"
-    return legacy_status or "pending"
+    if song.get("status") == "uploaded":
+        return "uploaded"
+    if song.get("status") in {"processed", "done"}:
+        return "done"
+    return song.get("status") or "pending"
+
+
+def storage_kind(song: dict) -> str:
+    if song.get("file_id"):
+        return "gridfs"
+    if song.get("file_key"):
+        return "legacy_object_storage"
+    return "missing"
 
 
 def serialize_song(song: dict) -> dict:
@@ -47,6 +58,7 @@ def serialize_song(song: dict) -> dict:
         song["file_id"] = str(song["file_id"])
 
     song["analysis_status"] = effective_analysis_status(song)
+    song["storage_kind"] = storage_kind(song)
     song["can_stream"] = bool(song.get("file_id") or song.get("file_key"))
 
     for key, value in list(song.items()):
@@ -155,6 +167,27 @@ async def get_songs(limit: int = Query(1000, ge=1, le=5000)):
 
     set_cached(cache_key, songs)
     return songs
+
+
+@router.get("/storage-summary")
+async def storage_summary():
+    summary = {
+        "gridfs": 0,
+        "legacy_object_storage": 0,
+        "missing": 0,
+        "done": 0,
+        "uploaded": 0,
+        "pending": 0,
+        "processing": 0,
+        "failed": 0,
+    }
+
+    async for song in db.songs.find({}):
+        summary[storage_kind(song)] += 1
+        status = effective_analysis_status(song)
+        summary[status] = summary.get(status, 0) + 1
+
+    return summary
 
 
 @router.get("/{song_id}/stream")
@@ -267,6 +300,7 @@ async def get_song_analysis(song_id: str):
         "artist": song.get("artist"),
         "file_id": str(song.get("file_id")) if song.get("file_id") else None,
         "file_key": song.get("file_key"),
+        "storage_kind": storage_kind(song),
         "hash": song.get("hash"),
         "file_size_bytes": song.get("file_size"),
         "uploaded_at": song.get("uploaded_at"),

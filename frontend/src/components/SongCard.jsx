@@ -24,14 +24,14 @@ export default function SongCard({ song, onEdit, onPlay, onRecommend, isPlaying 
         <button
           onClick={() => onPlay?.(song)}
           disabled={!song.canStream}
-          className="px-4 py-2 rounded-full bg-white text-black font-semibold hover:bg-white/90 transition disabled:opacity-40"
+          className="px-4 py-2 rounded-full bg-white text-black font-semibold hover:bg-white/90 transition disabled:opacity-40 disabled:cursor-not-allowed"
         >
           {isPlaying ? "Playing" : "Play"}
         </button>
         <button
           onClick={() => onRecommend?.(song)}
           disabled={status !== "done"}
-          className="px-4 py-2 rounded-full bg-green-500 text-black font-semibold hover:bg-green-400 transition disabled:opacity-40"
+          className="px-4 py-2 rounded-full bg-green-500 text-black font-semibold hover:bg-green-400 transition disabled:opacity-40 disabled:cursor-not-allowed"
         >
           Next
         </button>
@@ -51,6 +51,22 @@ function StatusPill({ status, duration }) {
     return (
       <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-green-500/15 text-green-300 border border-green-500/25">
         {duration ? `${duration}s` : "Done"}
+      </span>
+    );
+  }
+
+  if (status === "uploaded") {
+    return (
+      <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-500/15 text-blue-200 border border-blue-500/25">
+        Uploaded
+      </span>
+    );
+  }
+
+  if (status === "processing") {
+    return (
+      <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-500/15 text-purple-200 border border-purple-500/25">
+        Processing
       </span>
     );
   }

@@ -111,6 +111,7 @@ export default function Home() {
   }
 
   function handlePlay(song) {
+    setError("");
     setPlayingSong(song);
   }
 
@@ -228,7 +229,10 @@ export default function Home() {
               controls
               autoPlay
               src={songStreamUrl(playingSong.id)}
-              onError={() => setError("Could not play this song. Check that the audio file exists in GridFS or the legacy object storage referenced by file_key.")}
+              onError={() => {
+                setPlayingSong(null);
+                setError("Could not play this song. The MongoDB record exists, but the actual audio file is not reachable from GridFS or legacy object storage.");
+              }}
             />
           </div>
         </div>
@@ -262,6 +266,6 @@ function normalizeSongForUi(raw) {
     hash: raw.hash,
     cluster: raw.ml_cluster,
     canStream: raw.can_stream || !!raw.file_id || !!raw.file_key,
-    legacyStorage: !!raw.file_key && !raw.file_id,
+    legacyStorage: raw.storage_kind === "legacy_object_storage" || (!!raw.file_key && !raw.file_id),
   };
 }
