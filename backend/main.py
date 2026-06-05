@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from database import MONGO_DB_NAME, MONGO_URL, client, db
 from routers.auth import router as auth_router
+from routers.ml import router as ml_router
 from routers.songs import router as songs_router
 
 app = FastAPI()
@@ -20,6 +21,7 @@ app.add_middleware(
 
 app.include_router(songs_router)
 app.include_router(auth_router)
+app.include_router(ml_router)
 
 
 @app.get("/")
@@ -27,7 +29,15 @@ async def root():
     return {
         "message": "Server is running",
         "database": MONGO_DB_NAME,
-        "routes": ["/songs", "/songs/upload", "/auth/register", "/auth/login"],
+        "routes": [
+            "/songs",
+            "/songs/upload",
+            "/auth/register",
+            "/auth/login",
+            "/ml/train",
+            "/ml/stats",
+            "/ml/playlists",
+        ],
     }
 
 
@@ -37,6 +47,10 @@ async def test_routes():
         "songs": "GET /songs/",
         "songs_search": "GET /songs/search?title=&artist=",
         "songs_upload": "POST /songs/upload",
+        "ml_train": "POST /ml/train",
+        "ml_stats": "GET /ml/stats",
+        "ml_playlists": "GET /ml/playlists",
+        "ml_recommendations": "GET /ml/recommendations/{song_id}",
         "docs": "/docs",
         "openapi": "/openapi.json",
     }
@@ -75,6 +89,8 @@ async def startup():
             await db.songs.create_index("title")
             await db.songs.create_index("artist")
             await db.songs.create_index("analysis_status")
+            await db.songs.create_index("ml_cluster")
+            await db.ml_model_runs.create_index("trained_at")
             await db.users.create_index("username")
             await db.users.create_index("email")
             print(f"Mongo connected at {MONGO_URL}; using database {MONGO_DB_NAME}")

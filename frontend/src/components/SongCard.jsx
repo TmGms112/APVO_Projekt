@@ -1,4 +1,4 @@
-export default function SongCard({ song, onEdit }) {
+export default function SongCard({ song, onEdit, onRecommend }) {
   const status = song.analysisStatus || "pending";
 
   return (
@@ -14,11 +14,19 @@ export default function SongCard({ song, onEdit }) {
         <div className="mt-2 flex flex-wrap gap-2">
           {song.genre && <Pill>{song.genre}</Pill>}
           {song.year && <Pill>{song.year}</Pill>}
+          {song.cluster !== undefined && song.cluster !== null && <Pill>Cluster {song.cluster}</Pill>}
           {song.hash && <Pill className="max-w-[280px] truncate"># {song.hash}</Pill>}
         </div>
       </div>
 
       <div className="flex items-center justify-between md:justify-end gap-2">
+        <button
+          onClick={() => onRecommend?.(song)}
+          disabled={status !== "done"}
+          className="px-4 py-2 rounded-full bg-green-500 text-black font-semibold hover:bg-green-400 transition disabled:opacity-40"
+        >
+          Next
+        </button>
         <button
           onClick={() => onEdit?.(song)}
           className="px-4 py-2 rounded-full bg-white/10 border border-white/10 hover:bg-white/15 transition"

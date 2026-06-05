@@ -1,12 +1,12 @@
 import hashlib
 import os
-import tempfile
 import time
 
 from bson import ObjectId
 from gridfs import GridFSBucket
 from pymongo import MongoClient, ReturnDocument
-from tinytag import TinyTag
+
+from ml_features import extract_audio_features
 
 MONGO_URL = os.getenv("MONGO_URL", "mongodb://mongo:27017/spotify_clone")
 MONGO_DB_NAME = os.getenv("MONGO_DB_NAME", "spotify_clone")
@@ -53,16 +53,10 @@ while True:
 
         sha256_hash = hashlib.sha256(file_bytes).hexdigest()
         md5_hash = hashlib.md5(file_bytes).hexdigest()
-
-        suffix = os.path.splitext(song.get("filename") or "uploaded.mp3")[1] or ".mp3"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
-
-        try:
-            tag = TinyTag.get(tmp_path)
-        finally:
-            os.unlink(tmp_path)
+        features, feature_vector, metadata = extract_audio_features(
+            file_bytes,
+            song.get("filename") or "uploaded-audio",
+        )
 
         duplicate = db.songs.find_one(
             {
@@ -71,7 +65,7 @@ while True:
             }
         )
 
-        duration_seconds = tag.duration
+        duration_seconds = features.get("duration_seconds")
         update_data = {
             "hash": sha256_hash,
             "md5_hash": md5_hash,
@@ -80,15 +74,11 @@ while True:
             "processed_at": time.time(),
             "duration_seconds": duration_seconds,
             "duration": round(duration_seconds) if duration_seconds is not None else None,
-            "audio_title": tag.title,
-            "audio_artist": tag.artist,
-            "audio_album": tag.album,
-            "audio_bitrate": tag.bitrate,
-            "audio_samplerate": tag.samplerate,
-            "audio_channels": tag.channels,
-            "audio_genre": tag.genre,
-            "audio_year": tag.year,
+            "features": features,
+            "feature_vector": feature_vector,
+            "feature_names": list(features.keys()),
             "is_duplicate": bool(duplicate),
+            **metadata,
         }
 
         if duplicate:

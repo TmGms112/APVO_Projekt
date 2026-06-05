@@ -3,7 +3,15 @@ import UploadForm from "../components/UploadForm";
 import SongList from "../components/SongList";
 import SearchBar from "../components/SearchBar";
 import EditMetadataModal from "../components/EditMetadataModal";
+import AnalyticsDashboard from "../components/AnalyticsDashboard";
 import { getSongs, searchSongs, updateSongMeta } from "../api/songs";
+import {
+  getLatestModelRun,
+  getMlStats,
+  getPlaylists,
+  getRecommendations,
+  trainModels,
+} from "../api/ml";
 
 export default function Home() {
   const [songs, setSongs] = useState([
@@ -33,6 +41,12 @@ export default function Home() {
   const [filters, setFilters] = useState({ title: "", artist: "" });
   const [error, setError] = useState("");
   const [editingSong, setEditingSong] = useState(null);
+  const [mlLoading, setMlLoading] = useState(false);
+  const [mlStats, setMlStats] = useState(null);
+  const [modelRun, setModelRun] = useState(null);
+  const [playlists, setPlaylists] = useState(null);
+  const [recommendations, setRecommendations] = useState(null);
+  const [selectedSong, setSelectedSong] = useState(null);
 
   const filteredSongs = useMemo(() => {
     const t = (filters.title || "").toLowerCase();
@@ -70,12 +84,60 @@ export default function Home() {
     }
   }
 
+  async function loadMlDashboard() {
+    try {
+      setMlLoading(true);
+      setError("");
+      const [stats, latestRun, playlistData] = await Promise.all([
+        getMlStats(),
+        getLatestModelRun(),
+        getPlaylists(),
+      ]);
+      setMlStats(stats);
+      setModelRun(latestRun);
+      setPlaylists(playlistData);
+    } catch (e) {
+      setError(e.message || "Failed to load ML dashboard.");
+    } finally {
+      setMlLoading(false);
+    }
+  }
+
+  async function handleTrainModels() {
+    try {
+      setMlLoading(true);
+      setError("");
+      const latestRun = await trainModels();
+      setModelRun(latestRun);
+      await loadSongsFromApi();
+      await loadMlDashboard();
+    } catch (e) {
+      setError(e.message || "Failed to train ML models.");
+    } finally {
+      setMlLoading(false);
+    }
+  }
+
+  async function handleRecommend(song) {
+    try {
+      setMlLoading(true);
+      setError("");
+      setSelectedSong(song);
+      const data = await getRecommendations(song.id, 5);
+      setRecommendations(data);
+    } catch (e) {
+      setError(e.message || "Failed to generate recommendations.");
+    } finally {
+      setMlLoading(false);
+    }
+  }
+
   return (
     <div className="max-w-5xl mx-auto space-y-6">
       <header className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
         <div className="space-y-1">
           <h1 className="text-4xl font-bold tracking-tight">Audio Library</h1>
-          <p className="text-sm text-white/60">MongoDB-backed uploads and analysis</p>
+          <p className="text-sm text-white/60">MongoDB-backed uploads, analysis and ML playlists</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -110,8 +172,37 @@ export default function Home() {
         />
       </SectionCard>
 
+      <SectionCard title="Machine Learning" subtitle="Train models, create playlists and recommend the next song">
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            <button
+              onClick={handleTrainModels}
+              disabled={mlLoading}
+              className="px-5 py-2 rounded-full bg-green-500 text-black font-semibold hover:bg-green-400 transition disabled:opacity-50"
+            >
+              {mlLoading ? "Working..." : "Train Models"}
+            </button>
+            <button
+              onClick={loadMlDashboard}
+              disabled={mlLoading}
+              className="px-5 py-2 rounded-full bg-white/10 border border-white/10 hover:bg-white/15 transition disabled:opacity-50"
+            >
+              Load ML Dashboard
+            </button>
+          </div>
+
+          <AnalyticsDashboard
+            stats={mlStats}
+            modelRun={modelRun}
+            playlists={playlists}
+            recommendations={recommendations}
+            selectedSong={selectedSong}
+          />
+        </div>
+      </SectionCard>
+
       <SectionCard title="Songs" subtitle="Your current library">
-        <SongList songs={filteredSongs} onEdit={(song) => setEditingSong(song)} />
+        <SongList songs={filteredSongs} onEdit={(song) => setEditingSong(song)} onRecommend={handleRecommend} />
       </SectionCard>
 
       <EditMetadataModal
@@ -163,5 +254,6 @@ function normalizeSongForUi(raw) {
     analysisStatus: raw.analysisStatus || raw.analysis_status || "pending",
     duration: raw.duration || raw.duration_seconds,
     hash: raw.hash,
+    cluster: raw.ml_cluster,
   };
 }
