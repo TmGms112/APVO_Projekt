@@ -44,13 +44,9 @@ while True:
             {
                 "$and": [
                     {"features": {"$exists": False}},
-                    {
-                        "$or": [
-                            {"analysis_status": {"$in": ["pending", "uploaded"]}},
-                            {"status": {"$in": ["pending", "uploaded"]}},
-                            {"analysis_status": {"$exists": False}},
-                        ]
-                    },
+                    {"analysis_status": {"$ne": "processing"}},
+                    {"analysis_status": {"$ne": "failed"}},
+                    {"status": {"$ne": "failed"}},
                     {"$or": [{"file_id": {"$exists": True}}, {"file_key": {"$exists": True}}]},
                 ]
             },
@@ -64,7 +60,7 @@ while True:
         )
 
         if not song:
-            print("No pending songs...")
+            print("No songs without ML features to process...")
             time.sleep(5)
             continue
 

@@ -13,7 +13,7 @@ Full-stack audio library application with MongoDB-backed audio uploads, analysis
 1. The React app uploads audio through `POST /songs/upload`.
 2. FastAPI stores new uploaded files directly in MongoDB GridFS and stores song metadata in the `songs` collection.
 3. Existing legacy records with `file_key` and `bucket` are also supported for playback/analysis through MinIO if the referenced files are available.
-4. A background worker polls MongoDB for songs that need analysis.
+4. A background worker polls MongoDB for songs that are missing the new ML `features` field.
 5. The worker reads audio bytes from GridFS or legacy MinIO object storage, calculates hashes, extracts metadata and audio features, and updates the song document.
 6. The ML API builds model vectors from analyzed song data while excluding hash values, hash-derived duplicate flags, technical IDs and timestamps.
 7. The ML API compares K-Means and Agglomerative Clustering on those vectors and stores the best model run.
@@ -64,6 +64,8 @@ You can inspect one specific song object with:
 ```text
 http://localhost:8000/songs/<song_id>/storage-check
 ```
+
+Old `status: "processed"` songs from the first app version may have fields like `audio_artist`, `audio_bitrate`, `duration_seconds`, and `hash`, but still lack the new ML `features` and `feature_vector` fields. The current worker intentionally reprocesses any song that has reachable audio storage and is missing `features`, even if its old status is already `processed`.
 
 ## Machine Learning Functionality
 
