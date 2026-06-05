@@ -26,6 +26,8 @@ The app uses content-based recommendation. It extracts tempo, energy, spectral, 
 
 The selected model is chosen by the best silhouette score, with Davies-Bouldin score used as a tie-breaker. The selected clustering result is used to create automatic playlists. Cosine similarity over standardized audio feature vectors recommends the next song.
 
+The Docker images install `ffmpeg` and `libsndfile1` so Librosa can decode common audio formats during worker analysis.
+
 ## Local Development
 
 Backend stack:
