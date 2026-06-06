@@ -117,7 +117,8 @@ export default function Home() {
 
   function handlePlay(song, queue = []) {
     const normalizedSong = normalizeSongForUi(song);
-    const normalizedQueue = (queue.length ? queue : [song]).map(normalizeSongForUi);
+    if (!normalizedSong.id) return;
+    const normalizedQueue = (queue.length ? queue : [song]).map(normalizeSongForUi).filter((item) => item.id);
     setError("");
     setPlayQueue(normalizedQueue);
     setPlayingSong(normalizedSong);
@@ -299,7 +300,7 @@ function SectionCard({ title, subtitle, children }) {
 function normalizeSongForUi(raw) {
   const id = raw.id || raw._id || raw.songId || raw.song_id;
   return {
-    id: String(id),
+    id: id === undefined || id === null ? "" : String(id),
     title: raw.title || raw.name || raw.filename || raw.file_key || "Untitled",
     artist: raw.artist || raw.audio_artist || "Unknown",
     genre: raw.genre || raw.audio_genre,
