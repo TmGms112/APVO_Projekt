@@ -1,4 +1,4 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import datetime
 from math import sqrt
 from numbers import Number
@@ -6,11 +6,13 @@ from numbers import Number
 import numpy as np
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException, Query
-from sklearn.cluster import AgglomerativeClustering, KMeans
+from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
+from sklearn.feature_selection import VarianceThreshold
 from sklearn.metrics import calinski_harabasz_score, davies_bouldin_score, silhouette_score
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.preprocessing import StandardScaler
+from sklearn.mixture import GaussianMixture
+from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from database import db
 
@@ -21,6 +23,10 @@ TECHNICAL_FIELDS = {
     "_id",
     "id",
     "file_id",
+    "file_key",
+    "bucket",
+    "storage_kind",
+    "can_stream",
     "duplicate_of",
     "feature_vector",
     "feature_names",
@@ -36,37 +42,7 @@ TECHNICAL_FIELDS = {
 }
 HASH_DERIVED_FIELDS = {"is_duplicate", "duplicate_of"}
 EXCLUDED_MODEL_FIELDS = HASH_FIELDS | TECHNICAL_FIELDS | HASH_DERIVED_FIELDS
-
-NUMERIC_TOP_LEVEL_FIELDS = {
-    "file_size",
-    "duration",
-    "duration_seconds",
-    "year",
-    "audio_year",
-    "audio_bitrate",
-    "audio_samplerate",
-    "audio_channels",
-}
-CATEGORICAL_TOP_LEVEL_FIELDS = {
-    "title",
-    "artist",
-    "album",
-    "genre",
-    "filename",
-    "content_type",
-    "audio_title",
-    "audio_artist",
-    "audio_album",
-    "audio_genre",
-}
-
-
-async def _analyzed_songs():
-    songs = []
-    async for song in db.songs.find({"analysis_status": "done"}):
-        if _model_fields(song):
-            songs.append(song)
-    return songs
+LOW_CARDINALITY_LIMIT = 12
 
 
 def _serialize_value(value):
@@ -108,7 +84,9 @@ def _clean_category(value):
     if value is None:
         return None
     text = str(value).strip().lower()
-    return text if text else None
+    if not text or text in {"unknown", "unknown artist", "none", "null"}:
+        return None
+    return text
 
 
 def _model_fields(song):
@@ -125,13 +103,16 @@ def _model_fields(song):
         if key in EXCLUDED_MODEL_FIELDS or key in {"features"}:
             continue
 
-        if key in NUMERIC_TOP_LEVEL_FIELDS:
-            number = _as_float(value)
-            if number is not None:
-                numeric[key] = number
+        number = _as_float(value)
+        if number is not None:
+            numeric[key] = number
             continue
 
-        if key in CATEGORICAL_TOP_LEVEL_FIELDS:
+        if isinstance(value, bool):
+            numeric[key] = 1.0 if value else 0.0
+            continue
+
+        if isinstance(value, (str, int, float)):
             category = _clean_category(value)
             if category is not None:
                 categorical[key] = category
@@ -141,25 +122,47 @@ def _model_fields(song):
 
 def _build_schema(songs):
     numeric_fields = set()
-    categorical_values = defaultdict(set)
+    categorical_counts = defaultdict(Counter)
 
     for song in songs:
         fields = _model_fields(song)
         numeric_fields.update(fields["numeric"].keys())
         for key, value in fields["categorical"].items():
-            categorical_values[key].add(value)
+            categorical_counts[key][value] += 1
 
-    categorical_fields = {
-        key: sorted(values)
-        for key, values in sorted(categorical_values.items())
-        if values
-    }
+    categorical_fields = {}
+    for key, counts in sorted(categorical_counts.items()):
+        values = sorted(counts)
+        use_one_hot = len(values) <= LOW_CARDINALITY_LIMIT
+        categorical_fields[key] = {
+            "counts": dict(counts),
+            "categories": values if use_one_hot else [],
+            "encoding": "one_hot_plus_text_stats" if use_one_hot else "text_stats",
+        }
+
+    vector_names = []
+    vector_names.extend(sorted(numeric_fields))
+    for key, info in categorical_fields.items():
+        vector_names.extend(
+            [
+                f"{key}.known",
+                f"{key}.length",
+                f"{key}.token_count",
+                f"{key}.value_frequency",
+            ]
+        )
+        vector_names.extend(f"{key}={category}" for category in info["categories"])
 
     return {
         "numeric_fields": sorted(numeric_fields),
         "categorical_fields": categorical_fields,
+        "vector_names": vector_names,
         "excluded_fields": sorted(EXCLUDED_MODEL_FIELDS),
-        "description": "Uses analyzed song audio features, metadata and file attributes; excludes hashes, hash-derived duplicate flags, technical IDs and timestamps.",
+        "description": (
+            "Uses analyzed audio features plus available non-hash metadata and file attributes. "
+            "High-cardinality text fields are encoded as compact text/frequency features instead of sparse one-hot columns; "
+            "hashes, hash-derived duplicate flags, storage references, technical IDs and timestamps are excluded."
+        ),
     }
 
 
@@ -170,9 +173,17 @@ def _vectorize_song(song, schema):
     for key in schema["numeric_fields"]:
         vector.append(float(fields["numeric"].get(key, 0.0)))
 
-    for key, categories in schema["categorical_fields"].items():
+    total_songs = max(1, sum(1 for _ in [song]))
+    for key, info in schema["categorical_fields"].items():
         value = fields["categorical"].get(key)
-        vector.extend(1.0 if value == category else 0.0 for category in categories)
+        counts = info.get("counts") or {}
+        if value:
+            token_count = len(value.split())
+            frequency = counts.get(value, 0) / max(1, sum(counts.values()))
+            vector.extend([1.0, float(len(value)), float(token_count), float(frequency)])
+        else:
+            vector.extend([0.0, 0.0, 0.0, 0.0])
+        vector.extend(1.0 if value == category else 0.0 for category in info.get("categories", []))
 
     return vector
 
@@ -188,16 +199,74 @@ def _matrix(songs, schema=None):
     return matrix, schema
 
 
-def _cluster_count(sample_count):
+def _analyzed_query():
+    return {"$or": [{"analysis_status": "done"}, {"status": "processed"}]}
+
+
+async def _analyzed_songs():
+    songs = []
+    async for song in db.songs.find(_analyzed_query()):
+        if _model_fields(song):
+            songs.append(song)
+    return songs
+
+
+def _candidate_cluster_counts(sample_count):
     if sample_count < 3:
         raise HTTPException(
             status_code=400,
             detail="At least 3 analyzed songs are required to compare clustering models.",
         )
-    return max(2, min(5, sample_count - 1, round(sqrt(sample_count))))
+    upper = min(sample_count - 1, max(4, round(sqrt(sample_count) * 1.7)), 12)
+    return list(range(2, upper + 1))
 
 
-def _metrics(x_scaled, labels):
+def _feature_weight(name):
+    if name.startswith("features."):
+        return 1.8
+    if name in {"duration", "duration_seconds", "file_size", "audio_bitrate", "audio_samplerate"}:
+        return 1.1
+    if name.endswith((".known", ".length", ".token_count", ".value_frequency")):
+        return 0.65
+    return 0.85
+
+
+def _prepare_feature_space(x, schema):
+    scaler = RobustScaler()
+    x_scaled = scaler.fit_transform(x)
+
+    weights = np.array([_feature_weight(name) for name in schema.get("vector_names", [])], dtype=float)
+    if weights.size == x_scaled.shape[1]:
+        x_scaled = x_scaled * weights
+
+    if x_scaled.shape[1] > 1:
+        selector = VarianceThreshold(threshold=1e-8)
+        try:
+            x_scaled = selector.fit_transform(x_scaled)
+        except ValueError:
+            pass
+
+    max_components = min(12, x_scaled.shape[0] - 1, x_scaled.shape[1])
+    preprocessing = {
+        "scaler": "RobustScaler",
+        "feature_weighting": "Acoustic analysis features weighted higher than noisy text metadata.",
+        "variance_threshold": 1e-8,
+        "pca_components": None,
+        "pca_explained_variance_ratio": None,
+    }
+
+    if max_components >= 2 and x_scaled.shape[1] > max_components:
+        pca = PCA(n_components=max_components, random_state=42)
+        x_model = pca.fit_transform(x_scaled)
+        preprocessing["pca_components"] = int(max_components)
+        preprocessing["pca_explained_variance_ratio"] = round(float(np.sum(pca.explained_variance_ratio_)), 4)
+    else:
+        x_model = x_scaled
+
+    return StandardScaler().fit_transform(x_model), preprocessing
+
+
+def _metrics(x_model, labels):
     unique = set(int(label) for label in labels)
     if len(unique) < 2 or len(unique) >= len(labels):
         return {
@@ -207,22 +276,79 @@ def _metrics(x_scaled, labels):
         }
 
     return {
-        "silhouette_score": float(silhouette_score(x_scaled, labels)),
-        "davies_bouldin_score": float(davies_bouldin_score(x_scaled, labels)),
-        "calinski_harabasz_score": float(calinski_harabasz_score(x_scaled, labels)),
+        "silhouette_score": float(silhouette_score(x_model, labels)),
+        "davies_bouldin_score": float(davies_bouldin_score(x_model, labels)),
+        "calinski_harabasz_score": float(calinski_harabasz_score(x_model, labels)),
     }
 
 
-def _pick_best(results):
-    def score(result):
-        silhouette = result["metrics"].get("silhouette_score")
-        davies = result["metrics"].get("davies_bouldin_score")
-        return (
-            silhouette if silhouette is not None else -999.0,
-            -(davies if davies is not None else 999.0),
-        )
+def _candidate_score(result):
+    metrics = result["metrics"]
+    silhouette = metrics.get("silhouette_score")
+    davies = metrics.get("davies_bouldin_score")
+    calinski = metrics.get("calinski_harabasz_score")
+    return (
+        silhouette if silhouette is not None else -999.0,
+        -(davies if davies is not None else 999.0),
+        calinski if calinski is not None else -999.0,
+    )
 
-    return max(results, key=score)
+
+def _best_result(results):
+    if not results:
+        raise HTTPException(status_code=400, detail="No valid clustering result could be produced.")
+    return max(results, key=_candidate_score)
+
+
+def _fit_kmeans(x_model, cluster_counts):
+    candidates = []
+    for k in cluster_counts:
+        model = KMeans(n_clusters=k, random_state=42, n_init=30)
+        labels = model.fit_predict(x_model)
+        candidates.append(
+            {
+                "model_name": "K-Means",
+                "description": "Partitions songs around centroids after denoising and optimized cluster-count search.",
+                "cluster_count": k,
+                "labels": [int(label) for label in labels],
+                "metrics": {**_metrics(x_model, labels), "inertia": float(model.inertia_)},
+            }
+        )
+    return _best_result(candidates)
+
+
+def _fit_gaussian_mixture(x_model, cluster_counts):
+    candidates = []
+    for covariance_type in ["full", "diag"]:
+        for k in cluster_counts:
+            model = GaussianMixture(
+                n_components=k,
+                covariance_type=covariance_type,
+                random_state=42,
+                n_init=5,
+                reg_covar=1e-5,
+            )
+            labels = model.fit_predict(x_model)
+            metrics = _metrics(x_model, labels)
+            candidates.append(
+                {
+                    "model_name": "Gaussian Mixture",
+                    "description": "Creates probabilistic song groups, allowing clusters with different shapes and spreads.",
+                    "cluster_count": k,
+                    "labels": [int(label) for label in labels],
+                    "metrics": {
+                        **metrics,
+                        "bic": float(model.bic(x_model)),
+                        "aic": float(model.aic(x_model)),
+                        "covariance_type": covariance_type,
+                    },
+                }
+            )
+    return _best_result(candidates)
+
+
+def _pick_best(results):
+    return _best_result(results)
 
 
 def _cluster_summary(songs, labels):
@@ -279,70 +405,59 @@ def _playlist_name(summary):
     return "Balanced Playlist"
 
 
+def _pca_points(songs, x_model, labels):
+    if x_model.shape[1] >= 2:
+        reduced = PCA(n_components=2, random_state=42).fit_transform(x_model)
+    else:
+        reduced = np.column_stack([x_model[:, 0], np.zeros(x_model.shape[0])])
+
+    return [
+        {
+            "song_id": str(song["_id"]),
+            "title": song.get("title"),
+            "artist": song.get("artist"),
+            "cluster": int(label),
+            "x": float(point[0]),
+            "y": float(point[1]),
+        }
+        for song, point, label in zip(songs, reduced, labels)
+    ]
+
+
 @router.post("/train")
 async def train_models():
     songs = await _analyzed_songs()
     x, schema = _matrix(songs)
-    k = _cluster_count(len(songs))
-
-    scaler = StandardScaler()
-    x_scaled = scaler.fit_transform(x)
-
-    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-    kmeans_labels = kmeans.fit_predict(x_scaled)
-
-    agglomerative = AgglomerativeClustering(n_clusters=k)
-    agglomerative_labels = agglomerative.fit_predict(x_scaled)
+    x_model, preprocessing = _prepare_feature_space(x, schema)
+    cluster_counts = _candidate_cluster_counts(len(songs))
 
     results = [
-        {
-            "model_name": "K-Means",
-            "description": "Partitions songs into k groups by minimizing distance to cluster centers.",
-            "cluster_count": k,
-            "labels": [int(label) for label in kmeans_labels],
-            "metrics": {
-                **_metrics(x_scaled, kmeans_labels),
-                "inertia": float(kmeans.inertia_),
-            },
-        },
-        {
-            "model_name": "Agglomerative Clustering",
-            "description": "Builds song groups bottom-up by merging the most similar songs and clusters.",
-            "cluster_count": k,
-            "labels": [int(label) for label in agglomerative_labels],
-            "metrics": _metrics(x_scaled, agglomerative_labels),
-        },
+        _fit_kmeans(x_model, cluster_counts),
+        _fit_gaussian_mixture(x_model, cluster_counts),
     ]
 
     best = _pick_best(results)
     best_labels = best["labels"]
-
-    pca_points = []
-    pca = PCA(n_components=2, random_state=42)
-    reduced = pca.fit_transform(x_scaled)
-    for song, point, label in zip(songs, reduced, best_labels):
-        pca_points.append(
-            {
-                "song_id": str(song["_id"]),
-                "title": song.get("title"),
-                "artist": song.get("artist"),
-                "cluster": int(label),
-                "x": float(point[0]),
-                "y": float(point[1]),
-            }
-        )
-
+    pca_points = _pca_points(songs, x_model, best_labels)
     cluster_summary = _cluster_summary(songs, best_labels)
+
     run_doc = {
         "trained_at": datetime.utcnow(),
         "song_count": len(songs),
         "feature_schema": schema,
         "feature_count": int(x.shape[1]),
-        "cluster_count": k,
+        "model_feature_count": int(x_model.shape[1]),
+        "candidate_cluster_counts": cluster_counts,
+        "cluster_count": best["cluster_count"],
+        "preprocessing": preprocessing,
         "models_tested": results,
         "selected_model": {
             "model_name": best["model_name"],
-            "selection_reason": "Selected by highest silhouette score, using Davies-Bouldin as tie-breaker.",
+            "selection_reason": (
+                "Selected by highest silhouette score after comparing optimized cluster counts; "
+                "Davies-Bouldin and Calinski-Harabasz are used as tie-breakers."
+            ),
+            "cluster_count": best["cluster_count"],
             "metrics": best["metrics"],
         },
         "cluster_summary": cluster_summary,
@@ -382,10 +497,14 @@ async def stats():
     async for song in db.songs.find({}):
         all_songs.append(song)
 
-    featured = [song for song in all_songs if song.get("analysis_status") == "done"]
+    featured = [
+        song
+        for song in all_songs
+        if song.get("analysis_status") == "done" or song.get("status") == "processed"
+    ]
     statuses = defaultdict(int)
     for song in all_songs:
-        statuses[song.get("analysis_status", "unknown")] += 1
+        statuses[song.get("analysis_status") or song.get("status") or "unknown"] += 1
 
     tempos = [song.get("features", {}).get("tempo") for song in featured]
     energies = [song.get("features", {}).get("rms_mean") for song in featured]
@@ -430,6 +549,7 @@ async def playlists():
     summaries = {item["cluster"]: item for item in latest.get("cluster_summary", [])}
     result = []
     for cluster, cluster_songs in sorted(grouped.items()):
+        cluster_songs.sort(key=lambda item: ((item.get("artist") or ""), (item.get("title") or "")))
         summary = summaries.get(cluster, {"cluster": cluster, "song_count": len(cluster_songs)})
         result.append(
             {
@@ -437,7 +557,7 @@ async def playlists():
                 "name": f"{_playlist_name(summary)} {cluster + 1}",
                 "description": (
                     f"Generated by {latest['selected_model']['model_name']} from analyzed song data "
-                    "excluding hashes and technical identifiers."
+                    "excluding hashes, storage references and technical identifiers."
                 ),
                 "song_count": len(cluster_songs),
                 "average_tempo": summary.get("average_tempo"),
@@ -464,8 +584,8 @@ async def recommendations(song_id: str, limit: int = Query(5, ge=1, le=20)):
     latest = await latest_model_run()
     schema = latest.get("feature_schema") if latest else None
     x, schema = _matrix(songs, schema=schema)
-    x_scaled = StandardScaler().fit_transform(x)
-    similarities = cosine_similarity([x_scaled[target_index]], x_scaled)[0]
+    x_model, _ = _prepare_feature_space(x, schema)
+    similarities = cosine_similarity([x_model[target_index]], x_model)[0]
     target = songs[target_index]
 
     ranked = []
