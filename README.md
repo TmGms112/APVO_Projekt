@@ -15,9 +15,9 @@ Full-stack audio library application with MongoDB-backed audio uploads, analysis
 3. Existing legacy records with `file_key` and `bucket` are also supported for playback/analysis through MinIO if the referenced files are available.
 4. A background worker polls MongoDB for songs that are missing the new ML `features` field.
 5. The worker reads audio bytes from GridFS or legacy MinIO object storage, calculates hashes, extracts metadata and audio features, and updates the song document.
-6. The ML API builds model vectors from analyzed song data while excluding hash values, hash-derived duplicate flags, technical IDs and timestamps.
-7. The ML API compares K-Means and Agglomerative Clustering on those vectors and stores the best model run.
-8. The app displays songs, playback controls, model statistics, generated playlists, and next-song recommendations.
+6. The ML API builds model vectors from analyzed song data while excluding hash values, hash-derived duplicate flags, storage references, technical IDs and timestamps.
+7. The ML API scales and weights features, reduces noise with PCA, compares K-Means and Gaussian Mixture clustering across candidate cluster counts, and stores the best model run.
+8. The app displays songs, playback controls, model statistics, playable generated playlists, and next-song recommendations.
 
 ## Existing MongoDB Data
 
@@ -73,12 +73,14 @@ The worker Docker image copies the whole backend source because it shares module
 
 The app uses content-based recommendation. It extracts tempo, energy, spectral, MFCC and chroma features from each uploaded song and combines them with other analyzed song metadata and file attributes. Hash values are kept for duplicate detection, but they are not used by the models.
 
+Before clustering, the app robust-scales numeric fields, encodes high-cardinality text metadata as compact text/frequency features, weights acoustic analysis fields higher than noisy metadata, removes constant dimensions, and applies PCA denoising when the feature space is large.
+
 It evaluates two clustering models:
 
 - K-Means Clustering
-- Agglomerative Clustering
+- Gaussian Mixture Clustering
 
-The selected model is chosen by the best silhouette score, with Davies-Bouldin score used as a tie-breaker. The selected clustering result is used to create automatic playlists. Cosine similarity over standardized non-hash song vectors recommends the next song.
+Each model is tested across several candidate cluster counts. The selected model is chosen by the best silhouette score, with Davies-Bouldin and Calinski-Harabasz used as tie-breakers. The selected clustering result is used to create automatic playlists. The generated playlists are playable from the ML dashboard, and the audio player advances through the playlist queue. Cosine similarity over the processed non-hash song vectors recommends the next song.
 
 The Docker images install `ffmpeg` and `libsndfile1` so Librosa can decode common audio formats during worker analysis.
 
