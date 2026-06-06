@@ -80,7 +80,9 @@ It evaluates two clustering models:
 - K-Means Clustering
 - Gaussian Mixture Clustering
 
-Each model is tested across several candidate cluster counts. The selected model is chosen by the best silhouette score, with Davies-Bouldin and Calinski-Harabasz used as tie-breakers. The selected clustering result is used to create automatic playlists. The generated playlists are playable from the ML dashboard, and the audio player advances through the playlist queue. Cosine similarity over the processed non-hash song vectors recommends the next song.
+Each model is tested across several candidate cluster counts. For medium and large libraries, the API does not select two-cluster results because they do not create useful playlists. The selected model is chosen by a playlist-usefulness score that combines silhouette quality with playlist balance, penalizing results where one playlist contains most of the songs. Davies-Bouldin and Calinski-Harabasz are still reported for evaluation. The selected clustering result is used to create automatic playlists.
+
+The generated playlists are playable from the ML dashboard, and the audio player advances through the playlist queue. Cosine similarity over the processed non-hash song vectors recommends the next song.
 
 The Docker images install `ffmpeg` and `libsndfile1` so Librosa can decode common audio formats during worker analysis.
 
