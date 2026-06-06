@@ -43,6 +43,8 @@ TECHNICAL_FIELDS = {
 HASH_DERIVED_FIELDS = {"is_duplicate", "duplicate_of"}
 EXCLUDED_MODEL_FIELDS = HASH_FIELDS | TECHNICAL_FIELDS | HASH_DERIVED_FIELDS
 LOW_CARDINALITY_LIMIT = 12
+MAX_CLUSTER_CANDIDATES = 12
+TARGET_MAX_CLUSTER_FRACTION = 0.45
 
 
 def _serialize_value(value):
@@ -220,14 +222,29 @@ async def _analyzed_songs():
     return songs
 
 
+def _minimum_playlist_count(sample_count):
+    if sample_count < 10:
+        return 2
+    if sample_count < 40:
+        return 3
+    if sample_count < 120:
+        return 4
+    return 5
+
+
 def _candidate_cluster_counts(sample_count):
     if sample_count < 3:
         raise HTTPException(
             status_code=400,
             detail="At least 3 analyzed songs are required to compare clustering models.",
         )
-    upper = min(sample_count - 1, max(4, round(sqrt(sample_count) * 1.7)), 12)
-    return list(range(2, upper + 1))
+    minimum = min(sample_count - 1, _minimum_playlist_count(sample_count))
+    upper = min(
+        sample_count - 1,
+        max(minimum, round(sqrt(sample_count) * 1.7)),
+        MAX_CLUSTER_CANDIDATES,
+    )
+    return list(range(minimum, upper + 1))
 
 
 def _feature_weight(name):
@@ -275,28 +292,66 @@ def _prepare_feature_space(x, schema):
     return StandardScaler().fit_transform(x_model), preprocessing
 
 
+def _cluster_quality(labels):
+    counts = np.array(list(Counter(int(label) for label in labels).values()), dtype=float)
+    total = float(np.sum(counts))
+    proportions = counts / total
+    entropy = -float(np.sum(proportions * np.log(proportions)))
+    normalized_entropy = entropy / float(np.log(len(counts))) if len(counts) > 1 else 0.0
+    max_fraction = float(np.max(proportions))
+    imbalance_penalty = max(0.0, max_fraction - TARGET_MAX_CLUSTER_FRACTION)
+
+    return {
+        "cluster_count": int(len(counts)),
+        "max_cluster_size": int(np.max(counts)),
+        "min_cluster_size": int(np.min(counts)),
+        "max_cluster_fraction": max_fraction,
+        "min_cluster_fraction": float(np.min(proportions)),
+        "normalized_entropy": normalized_entropy,
+        "imbalance_penalty": imbalance_penalty,
+    }
+
+
 def _metrics(x_model, labels):
     unique = set(int(label) for label in labels)
+    quality = _cluster_quality(labels)
     if len(unique) < 2 or len(unique) >= len(labels):
         return {
             "silhouette_score": None,
             "davies_bouldin_score": None,
             "calinski_harabasz_score": None,
+            "playlist_balance_score": quality["normalized_entropy"],
+            "max_cluster_fraction": quality["max_cluster_fraction"],
         }
 
     return {
         "silhouette_score": float(silhouette_score(x_model, labels)),
         "davies_bouldin_score": float(davies_bouldin_score(x_model, labels)),
         "calinski_harabasz_score": float(calinski_harabasz_score(x_model, labels)),
+        "playlist_balance_score": quality["normalized_entropy"],
+        "max_cluster_fraction": quality["max_cluster_fraction"],
     }
 
 
 def _candidate_score(result):
     metrics = result["metrics"]
+    quality = result.get("playlist_quality") or {}
     silhouette = metrics.get("silhouette_score")
     davies = metrics.get("davies_bouldin_score")
     calinski = metrics.get("calinski_harabasz_score")
+    entropy = quality.get("normalized_entropy", metrics.get("playlist_balance_score") or 0.0)
+    imbalance_penalty = quality.get("imbalance_penalty", 0.0)
+    cluster_count = result.get("cluster_count", 0)
+
+    playlist_usefulness_score = (
+        (silhouette if silhouette is not None else -1.0)
+        + (0.45 * entropy)
+        - (0.9 * imbalance_penalty)
+        + (0.015 * min(cluster_count, 8))
+    )
+
     return (
+        playlist_usefulness_score,
         silhouette if silhouette is not None else -999.0,
         -(davies if davies is not None else 999.0),
         calinski if calinski is not None else -999.0,
@@ -314,12 +369,14 @@ def _fit_kmeans(x_model, cluster_counts):
     for k in cluster_counts:
         model = KMeans(n_clusters=k, random_state=42, n_init=30)
         labels = model.fit_predict(x_model)
+        quality = _cluster_quality(labels)
         candidates.append(
             {
                 "model_name": "K-Means",
-                "description": "Partitions songs around centroids after denoising and optimized cluster-count search.",
+                "description": "Partitions songs around centroids after denoising and playlist-balance-aware cluster search.",
                 "cluster_count": k,
                 "labels": [int(label) for label in labels],
+                "playlist_quality": quality,
                 "metrics": {**_metrics(x_model, labels), "inertia": float(model.inertia_)},
             }
         )
@@ -344,12 +401,14 @@ def _fit_gaussian_mixture(x_model, cluster_counts):
                 aic = float(model.aic(x_model))
             except Exception:
                 continue
+            quality = _cluster_quality(labels)
             candidates.append(
                 {
                     "model_name": "Gaussian Mixture",
-                    "description": "Creates probabilistic song groups, allowing clusters with different shapes and spreads.",
+                    "description": "Creates probabilistic song groups while avoiding one oversized playlist.",
                     "cluster_count": k,
                     "labels": [int(label) for label in labels],
+                    "playlist_quality": quality,
                     "metrics": {
                         **metrics,
                         "bic": bic,
@@ -464,15 +523,17 @@ async def train_models():
         "candidate_cluster_counts": cluster_counts,
         "cluster_count": best["cluster_count"],
         "preprocessing": preprocessing,
+        "playlist_quality": best.get("playlist_quality"),
         "models_tested": results,
         "selected_model": {
             "model_name": best["model_name"],
             "selection_reason": (
-                "Selected by highest silhouette score after comparing optimized cluster counts; "
-                "Davies-Bouldin and Calinski-Harabasz are used as tie-breakers."
+                "Selected by a playlist-usefulness score that combines silhouette quality with cluster balance; "
+                "Davies-Bouldin and Calinski-Harabasz are retained for model reporting."
             ),
             "cluster_count": best["cluster_count"],
             "metrics": best["metrics"],
+            "playlist_quality": best.get("playlist_quality"),
         },
         "cluster_summary": cluster_summary,
         "pca_points": pca_points,
