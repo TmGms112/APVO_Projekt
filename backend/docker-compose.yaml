@@ -1,0 +1,129 @@
+services:
+  mongo:
+    image: mongo:latest
+    container_name: spotify_mongo
+    volumes:
+      - mongo_data:/data/db
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [backend]
+
+  redis:
+    image: redis:alpine
+    container_name: spotify_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks: [backend]
+
+  minio1:
+    image: minio/minio
+    command: server http://minio{1...4}/data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio123}
+    volumes:
+      - minio1-data:/data
+    networks: [backend]
+    restart: unless-stopped
+
+  minio2:
+    image: minio/minio
+    command: server http://minio{1...4}/data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio123}
+    volumes:
+      - minio2-data:/data
+    networks: [backend]
+    restart: unless-stopped
+
+  minio3:
+    image: minio/minio
+    command: server http://minio{1...4}/data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio123}
+    volumes:
+      - minio3-data:/data
+    networks: [backend]
+    restart: unless-stopped
+
+  minio4:
+    image: minio/minio
+    command: server http://minio{1...4}/data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minio}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minio123}
+    volumes:
+      - minio4-data:/data
+    networks: [backend]
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: worker/dockerfile
+    container_name: spotify_worker
+    environment:
+      - PYTHONPATH=/app
+      - MONGO_URL=${MONGO_URL:-mongodb://mongo:27017/spotify}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-spotify}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio1:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minio123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-songs}
+    depends_on:
+      mongo:
+        condition: service_healthy
+      minio1:
+        condition: service_started
+    networks: [backend]
+    restart: unless-stopped
+
+  backend:
+    build: .
+    container_name: spotify_backend
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGO_URL=${MONGO_URL:-mongodb://mongo:27017/spotify}
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-spotify}
+      - REDIS_HOST=redis
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio1:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minio}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minio123}
+      - MINIO_BUCKET=${MINIO_BUCKET:-songs}
+    volumes:
+      - ./:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio1:
+        condition: service_started
+    networks: [backend]
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  mongo_data:
+  minio1-data:
+  minio2-data:
+  minio3-data:
+  minio4-data:
