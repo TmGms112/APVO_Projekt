@@ -166,6 +166,15 @@ def _build_schema(songs):
     }
 
 
+def _schema_needs_rebuild(schema):
+    if not schema or "vector_names" not in schema:
+        return True
+    for info in (schema.get("categorical_fields") or {}).values():
+        if not isinstance(info, dict) or "counts" not in info:
+            return True
+    return False
+
+
 def _vectorize_song(song, schema):
     fields = _model_fields(song)
     vector = []
@@ -173,7 +182,6 @@ def _vectorize_song(song, schema):
     for key in schema["numeric_fields"]:
         vector.append(float(fields["numeric"].get(key, 0.0)))
 
-    total_songs = max(1, sum(1 for _ in [song]))
     for key, info in schema["categorical_fields"].items():
         value = fields["categorical"].get(key)
         counts = info.get("counts") or {}
@@ -189,7 +197,8 @@ def _vectorize_song(song, schema):
 
 
 def _matrix(songs, schema=None):
-    schema = schema or _build_schema(songs)
+    if _schema_needs_rebuild(schema):
+        schema = _build_schema(songs)
     matrix = np.array([_vectorize_song(song, schema) for song in songs], dtype=float)
     if matrix.size == 0 or matrix.shape[1] == 0:
         raise HTTPException(
@@ -328,8 +337,13 @@ def _fit_gaussian_mixture(x_model, cluster_counts):
                 n_init=5,
                 reg_covar=1e-5,
             )
-            labels = model.fit_predict(x_model)
-            metrics = _metrics(x_model, labels)
+            try:
+                labels = model.fit_predict(x_model)
+                metrics = _metrics(x_model, labels)
+                bic = float(model.bic(x_model))
+                aic = float(model.aic(x_model))
+            except Exception:
+                continue
             candidates.append(
                 {
                     "model_name": "Gaussian Mixture",
@@ -338,8 +352,8 @@ def _fit_gaussian_mixture(x_model, cluster_counts):
                     "labels": [int(label) for label in labels],
                     "metrics": {
                         **metrics,
-                        "bic": float(model.bic(x_model)),
-                        "aic": float(model.aic(x_model)),
+                        "bic": bic,
+                        "aic": aic,
                         "covariance_type": covariance_type,
                     },
                 }
