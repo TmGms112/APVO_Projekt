@@ -25,6 +25,7 @@ export default function Home() {
   const [recommendations, setRecommendations] = useState(null);
   const [selectedSong, setSelectedSong] = useState(null);
   const [playingSong, setPlayingSong] = useState(null);
+  const [playQueue, setPlayQueue] = useState([]);
 
   const filteredSongs = useMemo(() => {
     const t = (filters.title || "").toLowerCase();
@@ -36,6 +37,10 @@ export default function Home() {
       return matchesTitle && matchesArtist;
     });
   }, [songs, filters]);
+
+  const queueIndex = playingSong
+    ? playQueue.findIndex((song) => String(song.id) === String(playingSong.id))
+    : -1;
 
   async function loadSongsFromApi() {
     try {
@@ -110,9 +115,37 @@ export default function Home() {
     }
   }
 
-  function handlePlay(song) {
+  function handlePlay(song, queue = []) {
+    const normalizedSong = normalizeSongForUi(song);
+    const normalizedQueue = (queue.length ? queue : [song]).map(normalizeSongForUi);
     setError("");
-    setPlayingSong(song);
+    setPlayQueue(normalizedQueue);
+    setPlayingSong(normalizedSong);
+  }
+
+  function handlePlayPlaylist(playlist) {
+    const queue = (playlist?.songs || []).map(normalizeSongForUi).filter((song) => song.id);
+    if (queue.length === 0) return;
+    setError("");
+    setPlayQueue(queue);
+    setPlayingSong(queue[0]);
+  }
+
+  function handleSongEnded() {
+    if (!playingSong || playQueue.length <= 1) {
+      setPlayingSong(null);
+      setPlayQueue([]);
+      return;
+    }
+
+    const currentIndex = playQueue.findIndex((song) => String(song.id) === String(playingSong.id));
+    const nextSong = currentIndex >= 0 ? playQueue[currentIndex + 1] : null;
+    if (nextSong) {
+      setPlayingSong(nextSong);
+    } else {
+      setPlayingSong(null);
+      setPlayQueue([]);
+    }
   }
 
   return (
@@ -180,6 +213,9 @@ export default function Home() {
             playlists={playlists}
             recommendations={recommendations}
             selectedSong={selectedSong}
+            onPlaySong={handlePlay}
+            onPlayPlaylist={handlePlayPlaylist}
+            playingSongId={playingSong?.id}
           />
         </div>
       </SectionCard>
@@ -222,15 +258,22 @@ export default function Home() {
           <div className="max-w-5xl mx-auto flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
             <div className="min-w-0">
               <div className="font-semibold truncate">{playingSong.title}</div>
-              <div className="text-sm text-white/60 truncate">{playingSong.artist}</div>
+              <div className="text-sm text-white/60 truncate">
+                {playingSong.artist}
+                {playQueue.length > 1 && queueIndex >= 0
+                  ? ` - track ${queueIndex + 1} of ${playQueue.length}`
+                  : ""}
+              </div>
             </div>
             <audio
               className="w-full md:w-[520px]"
               controls
               autoPlay
               src={songStreamUrl(playingSong.id)}
+              onEnded={handleSongEnded}
               onError={() => {
                 setPlayingSong(null);
+                setPlayQueue([]);
                 setError("Could not play this song. The MongoDB record exists, but the actual audio file is not reachable from GridFS or legacy object storage.");
               }}
             />
