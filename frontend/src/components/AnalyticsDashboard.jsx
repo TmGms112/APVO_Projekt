@@ -39,7 +39,7 @@ export default function AnalyticsDashboard({
             <div className="text-sm text-white/60">{modelRun?.song_count} songs trained</div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
             <Metric
               label="Silhouette"
               value={formatNumber(selectedModel.metrics?.silhouette_score)}
@@ -52,12 +52,17 @@ export default function AnalyticsDashboard({
               label="Calinski-Harabasz"
               value={formatNumber(selectedModel.metrics?.calinski_harabasz_score)}
             />
+            <Metric
+              label="Max playlist"
+              value={formatPercent(selectedModel.playlist_quality?.max_cluster_fraction)}
+            />
           </div>
 
           {modelRun?.preprocessing && (
             <p className="text-xs text-white/45">
-              Features were scaled, acoustic analysis was weighted higher, and PCA reduced the model space
-              to {modelRun.preprocessing.pca_components || modelRun.model_feature_count} dimensions.
+              Features were scaled, acoustic analysis was weighted higher, PCA reduced the model space
+              to {modelRun.preprocessing.pca_components || modelRun.model_feature_count} dimensions,
+              and model selection penalized one oversized playlist.
             </p>
           )}
         </div>
@@ -199,8 +204,9 @@ function ScoreBar({ model, silhouettes }) {
       </div>
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-white/45">
         <span>{model.description}</span>
-        <span>{model.cluster_count} clusters</span>
+        <span>{model.cluster_count} playlists</span>
         <span>DB {formatNumber(model.metrics?.davies_bouldin_score)}</span>
+        <span>Max playlist {formatPercent(model.playlist_quality?.max_cluster_fraction)}</span>
       </div>
     </div>
   );
@@ -241,4 +247,9 @@ function Histogram({ title, data, suffix = "" }) {
 function formatNumber(value, suffix = "") {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
   return `${Number(value).toFixed(2)}${suffix}`;
+}
+
+function formatPercent(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+  return `${Math.round(Number(value) * 100)}%`;
 }
