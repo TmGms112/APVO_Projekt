@@ -4,6 +4,9 @@ export default function AnalyticsDashboard({
   playlists,
   recommendations,
   selectedSong,
+  onPlaySong,
+  onPlayPlaylist,
+  playingSongId,
 }) {
   if (!stats && !modelRun && !playlists) {
     return <p className="text-white/60">No ML results loaded yet.</p>;
@@ -12,6 +15,10 @@ export default function AnalyticsDashboard({
   const models = modelRun?.models_tested || [];
   const selectedModel = modelRun?.selected_model;
   const playlistItems = playlists?.playlists || [];
+  const silhouetteValues = models
+    .map((model) => model.metrics?.silhouette_score)
+    .filter((value) => value !== null && value !== undefined && !Number.isNaN(Number(value)))
+    .map(Number);
 
   return (
     <div className="space-y-5">
@@ -46,6 +53,13 @@ export default function AnalyticsDashboard({
               value={formatNumber(selectedModel.metrics?.calinski_harabasz_score)}
             />
           </div>
+
+          {modelRun?.preprocessing && (
+            <p className="text-xs text-white/45">
+              Features were scaled, acoustic analysis was weighted higher, and PCA reduced the model space
+              to {modelRun.preprocessing.pca_components || modelRun.model_feature_count} dimensions.
+            </p>
+          )}
         </div>
       )}
 
@@ -54,7 +68,7 @@ export default function AnalyticsDashboard({
           <h3 className="font-semibold mb-3">Model comparison</h3>
           <div className="space-y-3">
             {models.map((model) => (
-              <ScoreBar key={model.model_name} model={model} />
+              <ScoreBar key={model.model_name} model={model} silhouettes={silhouetteValues} />
             ))}
           </div>
         </div>
@@ -72,17 +86,45 @@ export default function AnalyticsDashboard({
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             {playlistItems.map((playlist) => (
               <div key={playlist.cluster} className="rounded-xl border border-white/10 bg-white/5 p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="font-semibold">{playlist.name}</div>
-                  <span className="text-xs text-white/60">{playlist.song_count} songs</span>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="font-semibold truncate">{playlist.name}</div>
+                    <span className="text-xs text-white/60">{playlist.song_count} songs</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onPlayPlaylist?.(playlist)}
+                    className="shrink-0 px-3 py-1.5 rounded-full bg-green-500 text-black text-sm font-semibold hover:bg-green-400 transition"
+                  >
+                    Play
+                  </button>
                 </div>
-                <p className="mt-1 text-sm text-white/60">{playlist.description}</p>
-                <div className="mt-3 space-y-1">
-                  {playlist.songs.slice(0, 5).map((song) => (
-                    <div key={song.id} className="text-sm text-white/80 truncate">
-                      {song.title} <span className="text-white/40">- {song.artist}</span>
-                    </div>
-                  ))}
+                <p className="mt-2 text-sm text-white/60">{playlist.description}</p>
+                <div className="mt-3 space-y-1.5">
+                  {playlist.songs.slice(0, 8).map((song) => {
+                    const isPlaying = playingSongId === String(song.id);
+                    return (
+                      <div
+                        key={song.id}
+                        className="flex items-center justify-between gap-2 text-sm text-white/80"
+                      >
+                        <div className="min-w-0 truncate">
+                          {song.title} <span className="text-white/40">- {song.artist}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onPlaySong?.(song, playlist.songs)}
+                          className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-semibold transition ${
+                            isPlaying
+                              ? "bg-white text-black"
+                              : "bg-white/10 text-white hover:bg-white/15 border border-white/10"
+                          }`}
+                        >
+                          {isPlaying ? "Playing" : "Play"}
+                        </button>
+                      </div>
+                    );
+                  })}
                 </div>
               </div>
             ))}
@@ -108,9 +150,18 @@ export default function AnalyticsDashboard({
                   <div className="font-medium">{item.song.title}</div>
                   <div className="text-sm text-white/60">{item.song.artist}</div>
                 </div>
-                <div className="text-sm text-white/60 md:text-right">
-                  <div>{Math.round(item.similarity * 100)}% similar</div>
-                  <div>{item.reason}</div>
+                <div className="flex items-center gap-3 md:justify-end">
+                  <div className="text-sm text-white/60 md:text-right">
+                    <div>{Math.round(item.similarity * 100)}% similar</div>
+                    <div>{item.reason}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onPlaySong?.(item.song)}
+                    className="px-3 py-1.5 rounded-full bg-white text-black text-sm font-semibold hover:bg-white/90 transition"
+                  >
+                    Play
+                  </button>
                 </div>
               </div>
             ))}
@@ -130,9 +181,12 @@ function Metric({ label, value }) {
   );
 }
 
-function ScoreBar({ model }) {
-  const silhouette = model.metrics?.silhouette_score ?? 0;
-  const width = Math.max(8, Math.min(100, Math.round(((silhouette + 1) / 2) * 100)));
+function ScoreBar({ model, silhouettes }) {
+  const silhouette = Number(model.metrics?.silhouette_score ?? 0);
+  const min = Math.min(...silhouettes, silhouette);
+  const max = Math.max(...silhouettes, silhouette);
+  const range = max - min;
+  const width = range > 0 ? 22 + ((silhouette - min) / range) * 78 : Math.max(8, Math.min(100, silhouette * 100));
 
   return (
     <div>
@@ -141,9 +195,13 @@ function ScoreBar({ model }) {
         <span className="text-white/60">Silhouette {formatNumber(silhouette)}</span>
       </div>
       <div className="h-2 rounded-full bg-white/10 overflow-hidden">
-        <div className="h-full bg-green-400" style={{ width: `${width}%` }} />
+        <div className="h-full bg-green-400" style={{ width: `${Math.max(8, width)}%` }} />
       </div>
-      <p className="mt-1 text-xs text-white/45">{model.description}</p>
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-white/45">
+        <span>{model.description}</span>
+        <span>{model.cluster_count} clusters</span>
+        <span>DB {formatNumber(model.metrics?.davies_bouldin_score)}</span>
+      </div>
     </div>
   );
 }
