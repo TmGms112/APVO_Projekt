@@ -31,7 +31,7 @@ Hash values are stored for duplicate detection and reporting, but they are expli
 6. The worker stores the analytical song fields in MongoDB.
 7. The ML endpoint builds a training matrix from analyzed song fields, excluding hash values, hash-derived duplicate flags, storage references, technical IDs and timestamps.
 8. Numeric fields are robust-scaled, acoustic analysis features are weighted higher than noisy text metadata, high-cardinality text fields are encoded as compact text/frequency features, and PCA reduces noise in the model space.
-9. The ML endpoint trains and compares models across several candidate cluster counts.
+9. The ML endpoint trains and compares models across several candidate cluster counts. For medium and large libraries, two-cluster results are not considered because they do not create useful playlists.
 10. The best model assigns each song to a cluster used as an automatic playlist.
 11. Cosine similarity is used to recommend the next song from the same non-hash feature schema.
 
@@ -60,7 +60,7 @@ This keeps the model based on the user's analyzed song data without allowing fil
 
 ### Model 1: K-Means Clustering
 
-K-Means divides songs into clusters by minimizing distance between songs and their cluster center. It is useful for playlist generation because every cluster becomes a group of songs around a representative centroid. The app tests multiple cluster counts and keeps the K-Means result with the best evaluation metrics.
+K-Means divides songs into clusters by minimizing distance between songs and their cluster center. It is useful for playlist generation because every cluster becomes a group of songs around a representative centroid. The app tests multiple cluster counts and keeps the K-Means result with the best combined playlist-usefulness score.
 
 ### Model 2: Gaussian Mixture Model
 
@@ -78,7 +78,13 @@ The app computes three clustering metrics:
 - Davies-Bouldin Score: lower is better. It measures cluster compactness and separation.
 - Calinski-Harabasz Score: higher is better. It compares between-cluster separation with within-cluster dispersion.
 
-The selected model is the one with the highest silhouette score. Davies-Bouldin and Calinski-Harabasz are used as tie-breakers.
+The app also computes playlist-balance metrics:
+
+- maximum playlist fraction: the percent of trained songs in the largest generated playlist
+- playlist balance score: normalized entropy of cluster sizes, where higher means songs are spread more evenly
+- minimum and maximum playlist sizes
+
+The selected model is chosen by a playlist-usefulness score. This score still rewards silhouette quality, but it also rewards balanced playlist sizes and penalizes results where one playlist contains most songs. This is important because the goal is not only mathematical clustering quality, but usable playlists in the app.
 
 ## 7. Application Functionality
 
@@ -88,6 +94,7 @@ The frontend includes a Machine Learning section with:
 - Load ML Dashboard button
 - model comparison chart
 - selected model metrics
+- maximum playlist size metric
 - tempo, energy and duration distributions
 - generated playlists with Play buttons
 - automatic playback through the playlist queue
@@ -110,19 +117,20 @@ Use the ML dashboard screenshots and the `/ml/stats` endpoint to present:
 - duration histogram
 - model comparison metrics
 - generated cluster/playlist sizes
+- largest playlist fraction
 - number of model input fields used by the selected run
 - PCA dimensions and explained variance from the selected model run
 
 For the paper, include a table like this after running the model on your real songs:
 
-| Model | Silhouette Score | Davies-Bouldin Score | Calinski-Harabasz Score | Clusters | Selected |
-| --- | ---: | ---: | ---: | ---: | --- |
-| K-Means | value from dashboard | value from dashboard | value from dashboard | value from dashboard | yes/no |
-| Gaussian Mixture | value from dashboard | value from dashboard | value from dashboard | value from dashboard | yes/no |
+| Model | Silhouette Score | Davies-Bouldin Score | Calinski-Harabasz Score | Playlists | Largest Playlist | Selected |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| K-Means | value from dashboard | value from dashboard | value from dashboard | value from dashboard | value from dashboard | yes/no |
+| Gaussian Mixture | value from dashboard | value from dashboard | value from dashboard | value from dashboard | value from dashboard | yes/no |
 
 ## 9. Suggested Presentation Text
 
-This project implements a personal music recommendation system. The system uses MongoDB as a NoSQL database for metadata and new audio file storage through GridFS, while maintaining compatibility with older MinIO-backed song files. After each upload, a background worker extracts audio features and metadata from the song. The machine-learning pipeline builds model vectors from analyzed song data while excluding hash values, technical identifiers, storage references and timestamps. The preprocessing step uses robust scaling, compact metadata encoding, acoustic feature weighting and PCA denoising. Two clustering models, K-Means and Gaussian Mixture clustering, are evaluated using silhouette score, Davies-Bouldin score and Calinski-Harabasz score. The best model is integrated into the application to create automatic playable playlists. For next-song recommendation, the system uses cosine similarity between processed non-hash song vectors to find the most similar uploaded songs.
+This project implements a personal music recommendation system. The system uses MongoDB as a NoSQL database for metadata and new audio file storage through GridFS, while maintaining compatibility with older MinIO-backed song files. After each upload, a background worker extracts audio features and metadata from the song. The machine-learning pipeline builds model vectors from analyzed song data while excluding hash values, technical identifiers, storage references and timestamps. The preprocessing step uses robust scaling, compact metadata encoding, acoustic feature weighting and PCA denoising. Two clustering models, K-Means and Gaussian Mixture clustering, are evaluated using silhouette score, Davies-Bouldin score, Calinski-Harabasz score and playlist-balance metrics. The best model is integrated into the application to create automatic playable playlists. For next-song recommendation, the system uses cosine similarity between processed non-hash song vectors to find the most similar uploaded songs.
 
 ## 10. Limitations And Future Work
 
